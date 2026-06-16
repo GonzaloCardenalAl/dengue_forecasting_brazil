@@ -1,0 +1,13 @@
+[project]
+name = "dengue-forecasting-brazil"
+version = "0.1.0"
+description = "Quarterly dengue forecasting MVP for Brazilian Southeast capitals"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
+
+[tool.uv.workspace]
+members = ["packages/*", "ml", "app"]
+
+[tool.uv]
+package = false
