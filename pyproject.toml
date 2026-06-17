@@ -11,3 +11,10 @@ members = ["packages/*", "ml", "app"]
 
 [tool.uv]
 package = false
+
+# CPU-only PyTorch wheels: no GPU on this cluster's nodes, and the default
+# PyPI torch wheel drags in ~2GB of unused CUDA/cuDNN/NCCL packages.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

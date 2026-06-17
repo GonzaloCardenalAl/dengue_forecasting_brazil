@@ -1,0 +1,50 @@
+# Model training configuration.
+# Edit this file to change CV settings, search spaces, or default hyperparameters
+# without touching code. Loaded once via dengue_ml.training_config.load_training_config().
+
+random_seed: 42
+
+cv:
+  forecast_horizon: 4   # quarters ahead per outer fold / forecast horizon
+  n_inner_folds: 3
+
+hyperparameter_search:
+  xgb_n_trials: 30      # random search trials per outer fold
+
+xgboost:
+  # Used when no search params are supplied (e.g. quick smoke tests).
+  default_params:
+    n_estimators: 200
+    max_depth: 4
+    learning_rate: 0.05
+    subsample: 0.8
+    colsample_bytree: 0.8
+    min_child_weight: 3
+    reg_lambda: 1.0
+    objective: "reg:squarederror"
+
+  # Random search draws one value per key, independently, each trial.
+  param_distributions:
+    n_estimators:     [100, 200, 300, 500]
+    max_depth:         [3, 4, 5, 6]
+    learning_rate:     [0.01, 0.03, 0.05, 0.1]
+    subsample:         [0.6, 0.7, 0.8, 1.0]
+    colsample_bytree:  [0.6, 0.7, 0.8, 1.0]
+    min_child_weight:  [1, 3, 5, 10]
+    reg_lambda:        [0.1, 0.5, 1.0, 5.0]
+
+  # Target interval level for conditional-residual-quantile prediction
+  # intervals (see validation/conditional_residuals.py).
+  quantiles:
+    lower: 0.025
+    upper: 0.975
+
+sarima:
+  seasonal_period: 4   # m=4 (quarterly seasonality)
+  param_grid:
+    p: [0, 1, 2]
+    d: [0, 1]
+    q: [0, 1]
+    P: [0, 1]
+    D: [0, 1]
+    Q: [0, 1]

@@ -11,12 +11,21 @@ dependencies = [
     "matplotlib>=3.10",
     "scikit-learn>=1.9.0",
     "xgboost>=3.2.0",
+    "xrfm>=0.0.6",
+    "torch>=2.0",
+    "statsmodels>=0.14",
+    "joblib>=1.4",
+    "pyyaml>=6.0",
     "jupyter>=1.0",
     "ipykernel>=6.29",
 ]
 
 [tool.uv.sources]
 dengue-core = { workspace = true }
+torch = { index = "pytorch-cpu" }
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
 
 [build-system]
 requires = ["hatchling"]
