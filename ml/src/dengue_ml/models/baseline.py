@@ -9,23 +9,23 @@ def seasonal_naive_forecast(
     test_df: pd.DataFrame,
 ) -> pd.DataFrame:
     """
-    Seasonal naïve: ŷ(city, Q, year) = y(city, Q, year-1).
-    Falls back to city-quarter median across all training years if prior year is missing.
+    Seasonal naïve: ŷ(city, M, year) = y(city, M, year-1).
+    Falls back to city-month median across all training years if prior year is missing.
     Returns test_df rows with an added 'predicted' column (original scale).
     """
     train = train_df.copy()
-    train["quarter"] = train["quarter_start"].dt.quarter
+    train["month"] = train["month_start"].dt.month
 
-    # Build lookup: (city, year, quarter) → cases
-    lookup = train.set_index([CITY_COL, "quarter_start"])[TARGET]
+    # Build lookup: (city, month_start) → cases
+    lookup = train.set_index([CITY_COL, "month_start"])[TARGET]
 
     test = test_df.copy()
-    test["quarter"] = test["quarter_start"].dt.quarter
-    test["year"]    = test["quarter_start"].dt.year
+    test["month"] = test["month_start"].dt.month
+    test["year"]  = test["month_start"].dt.year
 
-    # Fallback: city-quarter median over training
+    # Fallback: city-month median over training
     medians = (
-        train.groupby([CITY_COL, "quarter"])[TARGET]
+        train.groupby([CITY_COL, "month"])[TARGET]
         .median()
         .rename("median_cases")
     )
@@ -33,16 +33,16 @@ def seasonal_naive_forecast(
     preds = []
     for _, row in test.iterrows():
         city = row[CITY_COL]
-        # Prior-year same quarter
-        prior_q = row["quarter_start"] - pd.DateOffset(years=1)
-        # Snap to quarter start
-        prior_q = pd.Timestamp(prior_q.year, prior_q.month, 1)
-        prior_q = pd.Period(prior_q, freq="Q").to_timestamp()
+        # Prior-year same month
+        prior_m = row["month_start"] - pd.DateOffset(years=1)
+        # Snap to month start
+        prior_m = pd.Timestamp(prior_m.year, prior_m.month, 1)
+        prior_m = pd.Period(prior_m, freq="M").to_timestamp()
 
-        val = lookup.get((city, prior_q), np.nan)
+        val = lookup.get((city, prior_m), np.nan)
         if np.isnan(val):
-            val = medians.get((city, row["quarter"]), np.nan)
+            val = medians.get((city, row["month"]), np.nan)
         preds.append(val)
 
     test["predicted"] = preds
-    return test[[CITY_COL, "quarter_start", TARGET, "predicted"]]
+    return test[[CITY_COL, "month_start", TARGET, "predicted"]]

@@ -7,19 +7,19 @@ def add_sst_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     Add Niño 3.4 lag/rolling/categorical features.
     SST is a global signal: no groupby needed.
-    All .shift() operations are on the already-quarterly merged nino34_anom column.
+    All .shift() operations are on the already-monthly merged nino34_anom column.
     """
     df = df.copy()
     s = df["nino34_anom"]
 
-    df["nino34_lag_1q"] = s.shift(1)
-    df["nino34_lag_2q"] = s.shift(2)
-    df["nino34_lag_4q"] = s.shift(4)
+    df["nino34_lag_3m"]  = s.shift(3)
+    df["nino34_lag_6m"]  = s.shift(6)
+    df["nino34_lag_12m"] = s.shift(12)
 
-    df["nino34_rolling_mean_2q"] = s.shift(1).rolling(2, min_periods=1).mean()
-    df["nino34_rolling_mean_4q"] = s.shift(1).rolling(4, min_periods=1).mean()
+    df["nino34_rolling_mean_6m"]  = s.shift(1).rolling(6, min_periods=1).mean()
+    df["nino34_rolling_mean_12m"] = s.shift(1).rolling(12, min_periods=1).mean()
 
-    df["nino34_change_1q"] = s - s.shift(1)
+    df["nino34_change_3m"] = s - s.shift(3)
 
     df["is_el_nino"] = (s > EL_NINO_THRESHOLD).astype(int)
     df["is_la_nina"] = (s < LA_NINA_THRESHOLD).astype(int)

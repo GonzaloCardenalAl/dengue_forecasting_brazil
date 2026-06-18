@@ -10,24 +10,25 @@ from dengue_ml.models.sarima import forecast_sarima
 from dengue_ml.validation.conditional_residuals import apply_residual_quantile_table
 
 
-def generate_next_4q_forecast(
+def generate_next_12m_forecast(
     artifact: dict,
     latest_df: pd.DataFrame,
     horizon: int = FORECAST_HORIZON,
 ) -> pd.DataFrame:
     """
-    Generate a `horizon`-quarter ahead point forecast + 95% CI.
+    Generate a `horizon`-month ahead point forecast + 95% CI.
 
     Parameters
     ----------
     artifact   : dict returned by train_final_model (or loaded via joblib)
-    latest_df  : full historical quarterly table (all available data)
-    horizon    : number of quarters to forecast (default 4)
+    latest_df  : full historical monthly table (all available data)
+    horizon    : number of months to forecast (default 12)
 
     Returns
     -------
     DataFrame with columns:
-        city, forecast_quarter, predicted_cases, lower_95, upper_95, model_name
+        city, forecast_month, predicted_cases, lower_95, upper_95,
+        proxy_value, model_name
     """
     model_name = artifact["model_name"]
 
@@ -53,19 +54,20 @@ def _forecast_baseline(
 ) -> pd.DataFrame:
     from dengue_ml.models.baseline import seasonal_naive_forecast
 
-    last_q = latest_df["quarter_start"].max()
-    future_qs = _next_quarters(last_q, horizon)
+    last_m = latest_df["month_start"].max()
+    future_ms = _next_months(last_m, horizon)
     rows = []
     for city in CITIES:
-        for q in future_qs:
+        for m in future_ms:
             # Build a fake test row
-            fake = pd.DataFrame([{CITY_COL: city, "quarter_start": q}])
+            fake = pd.DataFrame([{CITY_COL: city, "month_start": m}])
             result = seasonal_naive_forecast(latest_df, fake)
             pred = result["predicted"].iloc[0] if not result.empty else np.nan
             rows.append({
-                "city": city, "forecast_quarter": q,
+                "city": city, "forecast_month": m,
                 "predicted_cases": pred,
                 "lower_95": np.nan, "upper_95": np.nan,
+                "proxy_value": np.nan,
                 "model_name": "baseline",
             })
     return pd.DataFrame(rows)
@@ -77,20 +79,21 @@ def _forecast_sarima(
     artifact: dict, latest_df: pd.DataFrame, horizon: int
 ) -> pd.DataFrame:
     city_models = artifact["models"]
-    last_q = latest_df["quarter_start"].max()
-    future_qs = _next_quarters(last_q, horizon)
+    last_m = latest_df["month_start"].max()
+    future_ms = _next_months(last_m, horizon)
     rows = []
     for city, fit_result in city_models.items():
         preds_log, lower_log, upper_log = forecast_sarima(fit_result, horizon=horizon)
         preds = np.expm1(preds_log)
         lower = np.expm1(lower_log)
         upper = np.expm1(upper_log)
-        for i, q in enumerate(future_qs):
+        for i, m in enumerate(future_ms):
             rows.append({
-                "city": city, "forecast_quarter": q,
+                "city": city, "forecast_month": m,
                 "predicted_cases": float(preds[i]),
                 "lower_95": float(lower[i]),
                 "upper_95": float(upper[i]),
+                "proxy_value": np.nan,
                 "model_name": "sarima",
             })
     return pd.DataFrame(rows)
@@ -102,8 +105,8 @@ def _forecast_xgb(
     artifact: dict, latest_df: pd.DataFrame, horizon: int
 ) -> pd.DataFrame:
     """
-    Autoregressive multi-step forecast: predict Q+1, append to history,
-    predict Q+2, etc. Uses quantile models for 95% CI.
+    Autoregressive multi-step forecast: predict M+1, append to history,
+    predict M+2, etc. Uses quantile models for 95% CI.
     """
     feature_set  = artifact["feature_set"]
     climate_stats = artifact.get("climate_stats")
@@ -111,18 +114,18 @@ def _forecast_xgb(
     residual_quantiles = artifact.get("residual_quantiles")
 
     history = latest_df.copy()
-    last_q  = history["quarter_start"].max()
-    future_qs = _next_quarters(last_q, horizon)
+    last_m  = history["month_start"].max()
+    future_ms = _next_months(last_m, horizon)
 
     rows = []
-    for q in future_qs:
-        # Build feature row for this future quarter
+    for m in future_ms:
+        # Build feature row for this future month
         # We need the full df including all history for lag computation
         # Create a stub row for each city with NaN target, then build features
         stubs = pd.DataFrame([
             {
                 CITY_COL: city,
-                "quarter_start": q,
+                "month_start": m,
                 TARGET: np.nan,
                 "tempmed": _last_val(history, city, "tempmed"),
                 "humidmed": _last_val(history, city, "humidmed"),
@@ -138,33 +141,35 @@ def _forecast_xgb(
         ])
 
         extended = pd.concat([history, stubs], ignore_index=True).sort_values(
-            [CITY_COL, "quarter_start"]
+            [CITY_COL, "month_start"]
         )
 
         X_all, _, meta_all, _ = build_features(
             extended, feature_set, climate_fit_stats=climate_stats
         )
-        mask = meta_all["quarter_start"] == q
+        mask = meta_all["month_start"] == m
 
         if mask.sum() == 0:
             continue
 
-        X_q = X_all[mask]
-        cities_q = meta_all[mask][CITY_COL].values
+        X_m = X_all[mask]
+        cities_m = meta_all[mask][CITY_COL].values
 
-        preds = np.expm1(predict_xgb(model, X_q))
+        preds = np.expm1(predict_xgb(model, X_m))
         if residual_quantiles is not None:
-            proxy = X_q[residual_quantiles["proxy_col"]].values
+            proxy = X_m[residual_quantiles["proxy_col"]].values
             lower, upper = apply_residual_quantile_table(preds, proxy, residual_quantiles)
         else:
+            proxy = np.full_like(preds, np.nan)
             lower = upper = np.full_like(preds, np.nan)
 
-        for i, city in enumerate(cities_q):
+        for i, city in enumerate(cities_m):
             rows.append({
-                "city": city, "forecast_quarter": q,
+                "city": city, "forecast_month": m,
                 "predicted_cases": float(preds[i]),
                 "lower_95": float(lower[i]),
                 "upper_95": float(upper[i]),
+                "proxy_value": float(proxy[i]),
                 "model_name": artifact["model_name"],
             })
 
@@ -193,15 +198,15 @@ def _forecast_xrfm(
     residual_quantiles = artifact.get("residual_quantiles")
 
     history = latest_df.copy()
-    last_q  = history["quarter_start"].max()
-    future_qs = _next_quarters(last_q, horizon)
+    last_m  = history["month_start"].max()
+    future_ms = _next_months(last_m, horizon)
 
     rows = []
-    for q in future_qs:
+    for m in future_ms:
         stubs = pd.DataFrame([
             {
                 CITY_COL: city,
-                "quarter_start": q,
+                "month_start": m,
                 TARGET: np.nan,
                 "tempmed": _last_val(history, city, "tempmed"),
                 "humidmed": _last_val(history, city, "humidmed"),
@@ -217,33 +222,35 @@ def _forecast_xrfm(
         ])
 
         extended = pd.concat([history, stubs], ignore_index=True).sort_values(
-            [CITY_COL, "quarter_start"]
+            [CITY_COL, "month_start"]
         )
 
         X_all, _, meta_all, _ = build_features(
             extended, feature_set, climate_fit_stats=climate_stats
         )
-        mask = meta_all["quarter_start"] == q
+        mask = meta_all["month_start"] == m
 
         if mask.sum() == 0:
             continue
 
-        X_q = X_all[mask]
-        cities_q = meta_all[mask][CITY_COL].values
+        X_m = X_all[mask]
+        cities_m = meta_all[mask][CITY_COL].values
 
-        preds = np.expm1(predict_xrfm(model, X_q))
+        preds = np.expm1(predict_xrfm(model, X_m))
         if residual_quantiles is not None:
-            proxy = X_q[residual_quantiles["proxy_col"]].values
+            proxy = X_m[residual_quantiles["proxy_col"]].values
             lower, upper = apply_residual_quantile_table(preds, proxy, residual_quantiles)
         else:
+            proxy = np.full_like(preds, np.nan)
             lower = upper = np.full_like(preds, np.nan)
 
-        for i, city in enumerate(cities_q):
+        for i, city in enumerate(cities_m):
             rows.append({
-                "city": city, "forecast_quarter": q,
+                "city": city, "forecast_month": m,
                 "predicted_cases": float(preds[i]),
                 "lower_95": float(lower[i]),
                 "upper_95": float(upper[i]),
+                "proxy_value": float(proxy[i]),
                 "model_name": artifact["model_name"],
             })
 
@@ -256,13 +263,13 @@ def _forecast_xrfm(
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _next_quarters(last_q: pd.Timestamp, n: int) -> list[pd.Timestamp]:
-    quarters = []
-    q = pd.Period(last_q, freq="Q") + 1
+def _next_months(last_m: pd.Timestamp, n: int) -> list[pd.Timestamp]:
+    months = []
+    m = pd.Period(last_m, freq="M") + 1
     for _ in range(n):
-        quarters.append(q.to_timestamp())
-        q += 1
-    return quarters
+        months.append(m.to_timestamp())
+        m += 1
+    return months
 
 
 def _last_val(df: pd.DataFrame, city: str | None, col: str):
@@ -274,5 +281,5 @@ def _last_val(df: pd.DataFrame, city: str | None, col: str):
         sub = df
     if sub.empty or col not in sub.columns:
         return np.nan
-    val = sub.sort_values("quarter_start")[col].dropna()
+    val = sub.sort_values("month_start")[col].dropna()
     return val.iloc[-1] if not val.empty else np.nan

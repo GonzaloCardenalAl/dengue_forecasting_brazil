@@ -1,15 +1,15 @@
 import numpy as np
 import pandas as pd
 
-from dengue_ml.config import TARGET
+from dengue_ml.config import TARGET, CITY_COL
 from dengue_ml.training_config import load_training_config
 
 # nivel_inc_week_t-1 = InfoDengue's own incidence-vs-threshold alert level
 # (0=baseline, 1=pre-epidemic alert, 2=epidemic) as of the most recently
-# known week before the target quarter -- "are we, as of the freshest
+# known week before the target month -- "are we, as of the freshest
 # available data, already in confirmed epidemic territory." Used to condition
 # the residual distribution instead of a hard outbreak/non-outbreak label on
-# the target quarter itself, which would require knowing the outcome we're
+# the target month itself, which would require knowing the outcome we're
 # trying to bound.
 #
 # Empirically validated against the OOF predictions of all three XGBoost
@@ -134,6 +134,50 @@ def compute_residual_quantile_table(
 
     low_resid  = log_resid[sub[PROXY_COL] <  REGIME_THRESHOLD]
     high_resid = log_resid[sub[PROXY_COL] >= REGIME_THRESHOLD]
+
+    return {
+        "proxy_col": PROXY_SOURCE_FEATURE,
+        "threshold": REGIME_THRESHOLD,
+        "low":  {"q_lower": float(low_resid.quantile(lower_q)),  "q_upper": float(low_resid.quantile(upper_q))},
+        "high": {"q_lower": float(high_resid.quantile(lower_q)), "q_upper": float(high_resid.quantile(upper_q))},
+    }
+
+
+def compute_quarterly_residual_quantile_table(
+    fold_predictions: pd.DataFrame,
+    model_name: str,
+) -> dict:
+    """
+    Quarterly counterpart of `compute_residual_quantile_table`, for the final
+    forecast deliverable (monthly model, predictions summed to quarters).
+
+    Naively summing monthly lower_95/upper_95 bounds to get a quarterly band
+    is not statistically valid (overstates width if treated as fully
+    correlated, wrong if treated as independent without proper convolution).
+    Instead: aggregate this model's monthly OOF actual/predicted values to
+    (city, quarter, fold) sums, compute the quarterly residual
+    log1p(actual_sum) - log1p(predicted_sum), and run the exact same
+    regime-conditional quantile calibration as the monthly table -- keyed off
+    the same growth_proxy, read from the first month of each quarter (the
+    proxy is "last known week's alert level before the period starts", so the
+    first month's value is the one that would actually be available at
+    quarterly-forecast time).
+    """
+    lower_q, upper_q = _quantile_bounds()
+    sub = fold_predictions[fold_predictions["model"] == model_name].copy()
+    sub = sub.sort_values("month_start")
+    sub["_quarter"] = pd.PeriodIndex(sub["month_start"], freq="Q").to_timestamp()
+
+    grouped = sub.groupby([CITY_COL, "_quarter", "fold"]).agg(
+        actual_sum=(TARGET, "sum"),
+        predicted_sum=("predicted", "sum"),
+        **{PROXY_COL: (PROXY_COL, "first")},
+    ).reset_index()
+
+    log_resid = np.log1p(grouped["actual_sum"]) - np.log1p(grouped["predicted_sum"])
+
+    low_resid  = log_resid[grouped[PROXY_COL] <  REGIME_THRESHOLD]
+    high_resid = log_resid[grouped[PROXY_COL] >= REGIME_THRESHOLD]
 
     return {
         "proxy_col": PROXY_SOURCE_FEATURE,

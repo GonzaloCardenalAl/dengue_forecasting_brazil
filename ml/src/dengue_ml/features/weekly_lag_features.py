@@ -18,19 +18,19 @@ def _city_weekly_arrays(city: str, value_col: str) -> tuple[np.ndarray, np.ndarr
 @lru_cache(maxsize=None)
 def _week_window_features(
     city: str,
-    quarter_start: pd.Timestamp,
+    month_start: pd.Timestamp,
     value_col: str,
     prefix: str,
     n_weeks: int,
     log_transform: bool,
 ) -> dict:
     """
-    The window for a given (city, quarter, column) is identical no matter which
-    quarterly_df subset/fold calls into it, so memoizing here makes repeated
+    The window for a given (city, month, column) is identical no matter which
+    monthly_df subset/fold calls into it, so memoizing here makes repeated
     build_features() calls during nested CV / hyperparameter search nearly free.
     """
     dates, vals_all = _city_weekly_arrays(city, value_col)
-    qstart = np.datetime64(quarter_start)
+    qstart = np.datetime64(month_start)
     vals = vals_all[dates < qstart][-n_weeks:]
     if log_transform:
         vals = np.log1p(vals)
@@ -51,7 +51,7 @@ def _week_window_features(
 
 
 def add_weekly_lag_features(
-    quarterly_df: pd.DataFrame,
+    monthly_df: pd.DataFrame,
     value_col: str,
     prefix: str,
     n_weeks: int,
@@ -59,18 +59,18 @@ def add_weekly_lag_features(
     group_col: str = CITY_COL,
 ) -> pd.DataFrame:
     """
-    For each city-quarter row, pull the last `n_weeks` raw weekly values strictly
-    before the quarter starts (t-1 = most recent week, t-n = oldest), plus
+    For each city-month row, pull the last `n_weeks` raw weekly values strictly
+    before the month starts (t-1 = most recent week, t-n = oldest), plus
     week-over-week growth/acceleration. Gives the model the actual shape of the
-    recent trajectory instead of a single quarterly aggregate.
+    recent trajectory instead of a single monthly aggregate.
 
-    Multi-step-ahead forecasts (quarters beyond the next one) have no real future
+    Multi-step-ahead forecasts (months beyond the next one) have no real future
     weekly data, so they reuse the same last-known weekly window — an inherent
-    limitation of week-level features under a quarterly forecast horizon.
+    limitation of week-level features under a multi-month forecast horizon.
     """
-    df = quarterly_df.reset_index(drop=True).copy()
+    df = monthly_df.reset_index(drop=True).copy()
     records = [
-        _week_window_features(row[group_col], row["quarter_start"], value_col, prefix, n_weeks, log_transform)
+        _week_window_features(row[group_col], row["month_start"], value_col, prefix, n_weeks, log_transform)
         for _, row in df.iterrows()
     ]
     feat_df = pd.DataFrame(records, index=df.index)

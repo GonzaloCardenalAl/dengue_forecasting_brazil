@@ -27,14 +27,14 @@ CITY_COL = "city_name"
 
 CITIES = ["Vitória", "Belo Horizonte", "Rio de Janeiro", "São Paulo"]
 
-# ── Reporting lag: quarters whose end date is within 13 weeks of the data pull
-# are considered potentially unreliable. Set to the last quarter that had
-# sufficient time to converge. Data runs through Q4 2025; pulled mid-2026 so
-# Q4 2025 is stable. Update this constant when refreshing the dataset.
-MAX_RELIABLE_QUARTER = pd.Timestamp("2025-10-01")  # start of 2025-Q4
+# ── Reporting lag: months whose end date is within 13 weeks of the data pull
+# are considered potentially unreliable. Set to the last month that had
+# sufficient time to converge. Data runs through Dec 2025; pulled mid-2026 so
+# Dec 2025 is stable. Update this constant when refreshing the dataset.
+MAX_RELIABLE_MONTH = pd.Timestamp("2025-12-01")  # start of Dec 2025
 
 # ── Forecasting / CV settings (sourced from configs/model_training.yaml) ──────
-FORECAST_HORIZON = _tcfg["cv"]["forecast_horizon"]  # quarters ahead
+FORECAST_HORIZON = _tcfg["cv"]["forecast_horizon"]  # months ahead
 N_INNER_FOLDS    = _tcfg["cv"]["n_inner_folds"]
 RANDOM_SEED      = _tcfg["random_seed"]
 XGB_N_TRIALS     = _tcfg["hyperparameter_search"]["xgb_n_trials"]
@@ -46,20 +46,23 @@ CLASSIFICATION_FEATURE_SET   = _tcfg["classification"]["feature_set"]
 CLASSIFIER_MODEL_NAMES       = ["logreg", "xgb_clf"]
 
 # ── CV splits ────────────────────────────────────────────────────────────────
-# Outer fold cutoffs: train ≤ cutoff, test = next FORECAST_HORIZON quarters.
-# 10 folds, stepping annually from 2015Q4 → 2024Q4.
-# Fold 1 trains on 2010Q1–2015Q4 (24 quarters per city; ~6 years of history).
+# Outer fold cutoffs: train ≤ cutoff, test = next FORECAST_HORIZON months.
+# 10 folds, stepping annually. Cutoffs are Dec-1-of-year (not Oct-1/Q4-start)
+# so that `month_start <= cutoff` includes all 12 months of year Y in train,
+# and test = the next 12 months = Jan-Dec of year Y+1 -- identical calendar
+# test windows to the original quarterly folds, just at monthly resolution.
+# Fold 1 trains on 2010-01–2015-12 (72 months per city; ~6 years of history).
 OUTER_CUTOFFS = [
-    pd.Timestamp("2015-10-01"),  # fold 1:  train ≤ 2015Q4, test 2016Q1–Q4
-    pd.Timestamp("2016-10-01"),  # fold 2:  train ≤ 2016Q4, test 2017Q1–Q4
-    pd.Timestamp("2017-10-01"),  # fold 3:  train ≤ 2017Q4, test 2018Q1–Q4
-    pd.Timestamp("2018-10-01"),  # fold 4:  train ≤ 2018Q4, test 2019Q1–Q4
-    pd.Timestamp("2019-10-01"),  # fold 5:  train ≤ 2019Q4, test 2020Q1–Q4
-    pd.Timestamp("2020-10-01"),  # fold 6:  train ≤ 2020Q4, test 2021Q1–Q4
-    pd.Timestamp("2021-10-01"),  # fold 7:  train ≤ 2021Q4, test 2022Q1–Q4
-    pd.Timestamp("2022-10-01"),  # fold 8:  train ≤ 2022Q4, test 2023Q1–Q4
-    pd.Timestamp("2023-10-01"),  # fold 9:  train ≤ 2023Q4, test 2024Q1–Q4
-    pd.Timestamp("2024-10-01"),  # fold 10: train ≤ 2024Q4, test 2025Q1–Q4
+    pd.Timestamp("2015-12-01"),  # fold 1:  train ≤ 2015-12, test 2016-01–12
+    pd.Timestamp("2016-12-01"),  # fold 2:  train ≤ 2016-12, test 2017-01–12
+    pd.Timestamp("2017-12-01"),  # fold 3:  train ≤ 2017-12, test 2018-01–12
+    pd.Timestamp("2018-12-01"),  # fold 4:  train ≤ 2018-12, test 2019-01–12
+    pd.Timestamp("2019-12-01"),  # fold 5:  train ≤ 2019-12, test 2020-01–12
+    pd.Timestamp("2020-12-01"),  # fold 6:  train ≤ 2020-12, test 2021-01–12
+    pd.Timestamp("2021-12-01"),  # fold 7:  train ≤ 2021-12, test 2022-01–12
+    pd.Timestamp("2022-12-01"),  # fold 8:  train ≤ 2022-12, test 2023-01–12
+    pd.Timestamp("2023-12-01"),  # fold 9:  train ≤ 2023-12, test 2024-01–12
+    pd.Timestamp("2024-12-01"),  # fold 10: train ≤ 2024-12, test 2025-01–12
 ]
 
 # ── Models & feature sets ─────────────────────────────────────────────────────

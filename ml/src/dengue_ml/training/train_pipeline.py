@@ -25,9 +25,9 @@ def run_training_pipeline(
 
     print("Loading and preprocessing data ...")
     df = prepare_model_table()
-    print(f"  Quarterly table: {df.shape[0]} rows × {df.shape[1]} cols "
+    print(f"  Monthly table: {df.shape[0]} rows × {df.shape[1]} cols "
           f"| cities: {df['city_name'].nunique()} "
-          f"| quarters: {df['quarter_start'].nunique()}")
+          f"| months: {df['month_start'].nunique()}")
 
     print("\nRunning nested cross-validation ...")
     fold_metrics, fold_predictions, best_hparams = run_nested_cv(df)

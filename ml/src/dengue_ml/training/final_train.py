@@ -49,7 +49,7 @@ def train_final_model(
         for city in CITIES:
             city_train = df[df[CITY_COL] == city].copy()
             order, sorder = tune_sarima(city_train, inner_splits, city=city)
-            train_s  = city_train.set_index("quarter_start")[TARGET].sort_index()
+            train_s  = city_train.set_index("month_start")[TARGET].sort_index()
             city_models[city] = fit_sarima(np.log1p(train_s), order, sorder)
         artifact["models"] = city_models
         joblib.dump(artifact, outputs_dir / "final_model.pkl")
@@ -64,7 +64,7 @@ def train_final_model(
         model = train_xgb(X_tr, y_tr, params=selected_params)
     else:
         # xRFM requires a held-out X_val/y_val for fit() (used internally for
-        # early stopping) -- carve the most-recent-horizon-quarters tail off
+        # early stopping) -- carve the most-recent-horizon-months tail off
         # of df the same way nested_cv.py does. climate_stats for the
         # production artifact must still reflect the FULL df (used later at
         # forecast time), not just train_tail, so it's fit separately here.
@@ -110,7 +110,7 @@ def select_best_model(fold_metrics: pd.DataFrame) -> tuple[str, float]:
     single 2024 outbreak fold (~7x any prior year, mae_std >> mae_median for
     every model), so it picks whichever model happens to handle that one
     anomalous fold best rather than whichever is most accurate in a typical
-    quarter.
+    month.
     """
     summary = fold_metrics.groupby("model")["mae"].median()
     best = summary.idxmin()

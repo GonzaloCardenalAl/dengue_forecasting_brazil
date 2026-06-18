@@ -28,7 +28,7 @@ def run_nested_cv(
     Returns
     -------
     fold_metrics     : one row per (fold, model, city)
-    fold_predictions : one row per (fold, model, city, quarter)
+    fold_predictions : one row per (fold, model, city, month)
     best_hyperparams : one row per (fold, model)
     """
     outer_splits = make_outer_splits(df)
@@ -38,8 +38,8 @@ def run_nested_cv(
 
     for fold_idx, (outer_train, outer_test) in enumerate(outer_splits):
         print(f"\n=== Outer fold {fold_idx + 1}/{len(outer_splits)} "
-              f"(test: {outer_test['quarter_start'].min().date()} – "
-              f"{outer_test['quarter_start'].max().date()}) ===")
+              f"(test: {outer_test['month_start'].min().date()} – "
+              f"{outer_test['month_start'].max().date()}) ===")
 
         inner_splits = make_inner_splits(outer_train)
 
@@ -56,8 +56,8 @@ def run_nested_cv(
 
             # Merge predictions with ground truth
             preds_df = preds_df.merge(
-                outer_test[[CITY_COL, "quarter_start", TARGET]],
-                on=[CITY_COL, "quarter_start"],
+                outer_test[[CITY_COL, "month_start", TARGET]],
+                on=[CITY_COL, "month_start"],
                 how="left",
             )
             preds_df["fold"]  = fold_idx + 1
@@ -100,7 +100,7 @@ def _run_one_model(
 
     if model_name == "baseline":
         result = seasonal_naive_forecast(outer_train, outer_test)
-        return result[[CITY_COL, "quarter_start", "predicted"]], {}
+        return result[[CITY_COL, "month_start", "predicted"]], {}
 
     if model_name == "sarima":
         city_preds = []
@@ -113,13 +113,13 @@ def _run_one_model(
 
             order, sorder = tune_sarima(city_train, inner_splits, city=city)
             train_s = (
-                city_train.set_index("quarter_start")[TARGET].sort_index()
+                city_train.set_index("month_start")[TARGET].sort_index()
             )
             result = fit_sarima(np.log1p(train_s), order, sorder)
             preds_log, lower_log, upper_log = forecast_sarima(result, horizon=len(city_test))
             preds = np.expm1(preds_log)
 
-            city_df = city_test[[CITY_COL, "quarter_start"]].copy()
+            city_df = city_test[[CITY_COL, "month_start"]].copy()
             city_df["predicted"] = preds
             city_df["lower_95"]  = np.expm1(lower_log)
             city_df["upper_95"]  = np.expm1(upper_log)
@@ -154,7 +154,7 @@ def _run_one_model(
         # xRFM's fit() requires a held-out X_val/y_val (used internally for
         # early stopping), unlike XGBoost which trains on 100% of outer_train.
         # inner_splits' last entry is exactly "all-but-the-most-recent-horizon-
-        # quarters vs. the most-recent-horizon-quarters" — reuse it instead of
+        # months vs. the most-recent-horizon-months" — reuse it instead of
         # carving a separate split. This means xRFM's kernel regression only
         # sees train_tail as support points (slightly less history than
         # XGBoost gets), an inherent consequence of the required val split.

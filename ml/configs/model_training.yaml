@@ -5,7 +5,7 @@
 random_seed: 42
 
 cv:
-  forecast_horizon: 4   # quarters ahead per outer fold / forecast horizon
+  forecast_horizon: 12  # months ahead per outer fold / forecast horizon
   n_inner_folds: 3
 
 hyperparameter_search:
@@ -76,7 +76,7 @@ xrfm:
     diag:       [true, false]
 
 sarima:
-  seasonal_period: 4   # m=4 (quarterly seasonality)
+  seasonal_period: 12  # m=12 (monthly seasonality)
   param_grid:
     p: [0, 1, 2]
     d: [0, 1]
@@ -85,7 +85,7 @@ sarima:
     D: [0, 1]
     Q: [0, 1]
 
-# Binary "epidemic this quarter" classifier -- separate, parallel evaluation
+# Binary "epidemic this month" classifier -- separate, parallel evaluation
 # track (see validation/nested_cv_classifier.py), not part of the point-
 # regression MODEL_NAMES registry.
 classification:

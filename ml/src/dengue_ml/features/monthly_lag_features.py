@@ -14,7 +14,7 @@ def _global_monthly_arrays(value_col: str) -> tuple[np.ndarray, np.ndarray]:
 
 @lru_cache(maxsize=None)
 def _month_window_features(
-    quarter_start: pd.Timestamp,
+    month_start: pd.Timestamp,
     value_col: str,
     prefix: str,
     n_months: int,
@@ -22,11 +22,11 @@ def _month_window_features(
 ) -> dict:
     """
     SST/ENSO is one global series (same value for every city in a given month),
-    so this only needs to be cached per quarter — not per (city, quarter) like
+    so this only needs to be cached per month — not per (city, month) like
     the weekly cases/climate windows — making it even cheaper.
     """
     dates, vals_all = _global_monthly_arrays(value_col)
-    qstart = np.datetime64(quarter_start)
+    qstart = np.datetime64(month_start)
     vals = vals_all[dates < qstart][-n_months:]
     if log_transform:
         vals = np.log1p(vals)
@@ -47,23 +47,23 @@ def _month_window_features(
 
 
 def add_monthly_lag_features(
-    quarterly_df: pd.DataFrame,
+    monthly_df: pd.DataFrame,
     value_col: str,
     prefix: str,
     n_months: int,
     log_transform: bool = False,
 ) -> pd.DataFrame:
     """
-    Last-N-months raw values before each quarter (t-1 = most recent month),
-    plus month-over-month growth/acceleration.
+    Last-N-months raw values before each row's own month (t-1 = most recent
+    month), plus month-over-month growth/acceleration.
 
-    Quarter-bucketed lags (lag_1q=3mo, lag_2q=6mo) straddle right past the
-    EDA-identified peak ENSO->dengue correlation at a 4-month lag, averaging it
-    away. Monthly resolution — SST's native granularity — captures it directly.
+    Gives the model SST's actual recent trajectory at its native monthly
+    resolution, rather than relying solely on the coarser 3m/6m/12m
+    aggregate lags in sst_features.py.
     """
-    df = quarterly_df.reset_index(drop=True).copy()
+    df = monthly_df.reset_index(drop=True).copy()
     records = [
-        _month_window_features(row["quarter_start"], value_col, prefix, n_months, log_transform)
+        _month_window_features(row["month_start"], value_col, prefix, n_months, log_transform)
         for _, row in df.iterrows()
     ]
     feat_df = pd.DataFrame(records, index=df.index)

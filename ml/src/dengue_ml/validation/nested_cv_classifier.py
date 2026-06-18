@@ -19,7 +19,7 @@ from dengue_ml.validation.conditional_residuals import PROXY_SOURCE_FEATURE, REG
 # lags), so they're pulled straight off the classifier's own rows rather than
 # recomputed. This is what makes the precision/recall/F1 comparison across
 # {nivel_inc rule, sustained_rt rule, trained classifier} fair: identical
-# (city, quarter, fold) population for every candidate.
+# (city, month, fold) population for every candidate.
 SUSTAINED_RT_FEATURE = "sustained_rt_week_t-1"
 
 
@@ -29,7 +29,7 @@ def run_nested_cv_classifier(
     feature_set: str = CLASSIFICATION_FEATURE_SET,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Nested rolling CV for the binary "epidemic this quarter" classifier --
+    Nested rolling CV for the binary "epidemic this month" classifier --
     structurally separate from run_nested_cv() (regression point models), but
     reusing the identical outer/inner fold protocol (make_outer_splits /
     make_inner_splits on the same df) so results are directly comparable and
@@ -40,7 +40,7 @@ def run_nested_cv_classifier(
     fold_metrics     : one row per (fold, model) -- precision/recall/f1/auc
                         plus the two rule-based proxies' precision/recall/f1
                         on the SAME rows, for a fair side-by-side comparison.
-    fold_predictions : one row per (fold, model, city, quarter) with
+    fold_predictions : one row per (fold, model, city, month) with
                         predicted_proba, is_epidemic (true label),
                         nivel_inc_rule, sustained_rt_rule.
     """
@@ -50,8 +50,8 @@ def run_nested_cv_classifier(
 
     for fold_idx, (outer_train, outer_test) in enumerate(outer_splits):
         print(f"\n=== [classifier] Outer fold {fold_idx + 1}/{len(outer_splits)} "
-              f"(test: {outer_test['quarter_start'].min().date()} – "
-              f"{outer_test['quarter_start'].max().date()}) ===")
+              f"(test: {outer_test['month_start'].min().date()} – "
+              f"{outer_test['month_start'].max().date()}) ===")
 
         inner_splits = make_inner_splits(outer_train)
 

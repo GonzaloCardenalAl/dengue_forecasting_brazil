@@ -90,11 +90,13 @@ def metrics_by_city(
 def final_forecast_table(
     forecast_df: pd.DataFrame,
     outputs_dir: Path | None = None,
+    period_col: str = "forecast_month",
+    filename: str = "final_monthly_forecast.csv",
 ) -> pd.DataFrame:
     outputs_dir = _resolve_outputs_dir(outputs_dir)
     out = forecast_df.copy()
-    out["forecast_quarter"] = out["forecast_quarter"].astype(str)
-    out.to_csv(outputs_dir / "final_4q_forecast.csv", index=False)
+    out[period_col] = out[period_col].astype(str)
+    out.to_csv(outputs_dir / filename, index=False)
     return out
 
 
@@ -105,7 +107,7 @@ def proxy_comparison_table(
 ) -> pd.DataFrame:
     """
     Fair side-by-side comparison of the nivel_inc rule, sustained_rt rule, and
-    trained classifier(s) -- all scored on the SAME (city, quarter, fold)
+    trained classifier(s) -- all scored on the SAME (city, month, fold)
     rows/label from fold_predictions_clf (see nested_cv_classifier.py), plus
     each candidate's downstream LOFO coverage when substituted for the
     production CI-regime proxy (averaged across every regression model that
@@ -127,7 +129,7 @@ def proxy_comparison_table(
             mask = None
             if key_to_high is not None:
                 sub = fold_predictions_reg[fold_predictions_reg["model"] == m]
-                keys = list(zip(sub["city_name"], sub["quarter_start"]))
+                keys = list(zip(sub["city_name"], sub["month_start"]))
                 mask = pd.Series([bool(key_to_high.get(k, False)) for k in keys], index=sub.index)
             result = compute_regime_coverage(fold_predictions_reg, m, high_regime_mask=mask)
             covs.append(result["coverage"]); n_highs.append(result["n_high"]); n_lows.append(result["n_low"])
@@ -135,7 +137,7 @@ def proxy_comparison_table(
 
     rows = []
 
-    ref = fold_predictions_clf.drop_duplicates(["city_name", "quarter_start"])
+    ref = fold_predictions_clf.drop_duplicates(["city_name", "month_start"])
     for rule_col, label, use_production_default in [
         ("nivel_inc_rule", "nivel_inc", True),       # identical to the production proxy already in fold_predictions_reg
         ("sustained_rt_rule", "sustained_rt", False),
@@ -143,7 +145,7 @@ def proxy_comparison_table(
         m = calculate_all_classification_metrics(ref["is_epidemic"].values, ref[rule_col].values)
         key_to_high = None
         if not use_production_default:
-            key_to_high = dict(zip(zip(ref["city_name"], ref["quarter_start"]), ref[rule_col].astype(bool)))
+            key_to_high = dict(zip(zip(ref["city_name"], ref["month_start"]), ref[rule_col].astype(bool)))
         coverage, n_high, n_low = _coverage_for(key_to_high)
         rows.append({"candidate": label, **m, "coverage": coverage, "n_high_regime": n_high, "n_low_regime": n_low})
 
@@ -151,7 +153,7 @@ def proxy_comparison_table(
         sub = fold_predictions_clf[fold_predictions_clf["model"] == model_name]
         pred = (sub["predicted_proba"].values >= 0.5).astype(int)
         m = calculate_all_classification_metrics(sub["is_epidemic"].values, pred, sub["predicted_proba"].values)
-        key_to_high = dict(zip(zip(sub["city_name"], sub["quarter_start"]), sub["predicted_proba"] >= 0.5))
+        key_to_high = dict(zip(zip(sub["city_name"], sub["month_start"]), sub["predicted_proba"] >= 0.5))
         coverage, n_high, n_low = _coverage_for(key_to_high)
         rows.append({"candidate": model_name, **m, "coverage": coverage, "n_high_regime": n_high, "n_low_regime": n_low})
 

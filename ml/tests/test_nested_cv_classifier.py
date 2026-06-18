@@ -29,7 +29,7 @@ def _fake_split(*_args, **_kwargs):
     y_te = pd.Series([0, 0, 1, 1])
     meta_te = pd.DataFrame({
         "city_name": ["A", "A", "B", "B"],
-        "quarter_start": pd.to_datetime(["2024-01-01", "2024-04-01", "2024-01-01", "2024-04-01"]),
+        "month_start": pd.to_datetime(["2024-01-01", "2024-02-01", "2024-01-01", "2024-02-01"]),
     })
     return X_tr, y_tr, X_te, y_te, meta_te, None
 
@@ -46,7 +46,7 @@ def test_run_one_classifier_attaches_rule_columns_from_features(monkeypatch):
     assert list(preds_df["is_epidemic"])       == [0, 0, 1, 1]
     assert preds_df["predicted_proba"].between(0, 1).all()
     assert set(preds_df.columns) >= {
-        "city_name", "quarter_start", "predicted_proba", "is_epidemic",
+        "city_name", "month_start", "predicted_proba", "is_epidemic",
         "nivel_inc_rule", "sustained_rt_rule",
     }
 
