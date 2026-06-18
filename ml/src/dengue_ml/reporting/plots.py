@@ -245,6 +245,36 @@ def plot_oof_predictions(
     _savefig(f"oof_predictions_{model_name}{suffix}.png", fig, outputs_dir)
 
 
+def plot_proxy_comparison(comparison_table: pd.DataFrame, outputs_dir: Path | None = None) -> None:
+    """
+    Bar chart of precision/recall/f1/coverage across CI-regime-proxy candidates
+    (nivel_inc rule, sustained_rt rule, trained classifiers) -- replaces the
+    role of the original ad-hoc notebook figure (01f_proxy_precision_recall_
+    coverage.png), but built from real pipeline numbers on the fair
+    quarterly-grain population (see results_tables.proxy_comparison_table)
+    instead of the notebook's weekly-onset-detection code.
+    """
+    metrics = ["precision", "recall", "f1", "coverage"]
+    x = np.arange(len(comparison_table))
+    width = 0.2
+    colors = {"precision": "#d95f02", "recall": "#7570b3", "f1": "#e7298a", "coverage": "#1b9e77"}
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    for i, metric in enumerate(metrics):
+        ax.bar(x + (i - 1.5) * width, comparison_table[metric], width, label=metric, color=colors[metric])
+    ax.axhline(0.95, color="red", linestyle="--", linewidth=1, label="95% target (coverage only)")
+    ax.set_xticks(x)
+    ax.set_xticklabels(
+        [f"{c}\n(n_high={n:.0f})" for c, n in zip(comparison_table["candidate"], comparison_table["n_high_regime"])],
+    )
+    ax.set_ylim(0, 1.05)
+    ax.set_ylabel("Score")
+    ax.set_title("CI-regime proxy comparison: rules vs. trained classifier (fair, quarterly grain)")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    _savefig("proxy_comparison.png", fig, outputs_dir)
+
+
 def plot_feature_importance(
     model,
     feature_names: list[str],

@@ -21,7 +21,7 @@ if __name__ == "__main__":
     fold_metrics = pd.read_csv(fold_metrics_path)
     fold_predictions = pd.read_csv(fold_predictions_path) if fold_predictions_path.exists() else None
     best_model, best_mae = select_best_model(fold_metrics)
-    print(f"Best model: {best_model}  (mean MAE = {best_mae:.1f} cases)")
+    print(f"Best model: {best_model}  (median MAE = {best_mae:.1f} cases)")
 
     df = prepare_model_table()
     artifact = train_final_model(

@@ -77,27 +77,24 @@ FEATURE_COLS["cases_climate"] = (
 FEATURE_COLS["cases_climate_sst"] = FEATURE_COLS["cases_climate"] + _SST_COLS
 
 
-def build_features(
+def _build_feature_matrix(
     df: pd.DataFrame,
     feature_set: str,
     climate_fit_stats: Optional[pd.DataFrame] = None,
-) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, Optional[pd.DataFrame]]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Optional[pd.DataFrame]]:
     """
-    Build model-ready feature matrix.
-
-    Parameters
-    ----------
-    df : quarterly model table (output of prepare_model_table)
-    feature_set : one of 'cases_only', 'cases_climate', 'cases_climate_sst'
-    climate_fit_stats : pre-computed city means for climate anomaly.
-                        None → compute from df (training mode).
+    Shared feature-construction core for both the regression (`build_features`)
+    and classification (`build_classification_features`) builders -- identical
+    lag/climate/SST columns either way, only the attached `y` differs.
 
     Returns
     -------
-    X            : feature DataFrame
-    y            : log1p(casos_est) Series
-    meta         : city + quarter_start columns (for reporting)
-    climate_stats: fit_stats to reuse at inference (None for cases_only)
+    df_clean      : feature-engineered rows with NaN-lag rows dropped (still has
+                     all original columns, e.g. `nivel_inc`, for the caller to
+                     derive its own `y` from)
+    X             : feature DataFrame (cols restricted to `feature_set`)
+    meta          : city + quarter_start columns (for reporting)
+    climate_stats : fit_stats to reuse at inference (None for cases_only)
     """
     if feature_set not in FEATURE_COLS:
         raise ValueError(f"Unknown feature_set '{feature_set}'. Choose from {list(FEATURE_COLS)}")
@@ -132,10 +129,60 @@ def build_features(
     df_clean = df.dropna(subset=cols).copy()
 
     X    = df_clean[cols]
-    y    = np.log1p(df_clean[TARGET])
     meta = df_clean[[CITY_COL, "quarter_start"]].reset_index(drop=True)
 
-    return X.reset_index(drop=True), y.reset_index(drop=True), meta, returned_climate_stats
+    return df_clean.reset_index(drop=True), X.reset_index(drop=True), meta, returned_climate_stats
+
+
+def build_features(
+    df: pd.DataFrame,
+    feature_set: str,
+    climate_fit_stats: Optional[pd.DataFrame] = None,
+) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, Optional[pd.DataFrame]]:
+    """
+    Build model-ready feature matrix.
+
+    Parameters
+    ----------
+    df : quarterly model table (output of prepare_model_table)
+    feature_set : one of 'cases_only', 'cases_climate', 'cases_climate_sst'
+    climate_fit_stats : pre-computed city means for climate anomaly.
+                        None → compute from df (training mode).
+
+    Returns
+    -------
+    X            : feature DataFrame
+    y            : log1p(casos_est) Series
+    meta         : city + quarter_start columns (for reporting)
+    climate_stats: fit_stats to reuse at inference (None for cases_only)
+    """
+    df_clean, X, meta, returned_climate_stats = _build_feature_matrix(df, feature_set, climate_fit_stats)
+    y = np.log1p(df_clean[TARGET])
+    return X, y.reset_index(drop=True), meta, returned_climate_stats
+
+
+def build_classification_features(
+    df: pd.DataFrame,
+    feature_set: str,
+    climate_fit_stats: Optional[pd.DataFrame] = None,
+) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, Optional[pd.DataFrame]]:
+    """
+    Same leak-free feature columns as `build_features`, but with the binary
+    "epidemic this quarter" label (`nivel_inc == 2`, the quarterly max already
+    computed by `aggregate_dengue_to_quarterly` from weeks *within* the target
+    quarter -- valid as a label, never used as a feature) instead of
+    log1p(casos_est).
+
+    Returns
+    -------
+    X            : feature DataFrame (identical columns to build_features)
+    y            : binary is_epidemic Series (1 = nivel_inc==2 this quarter)
+    meta         : city + quarter_start columns (for reporting)
+    climate_stats: fit_stats to reuse at inference (None for cases_only)
+    """
+    df_clean, X, meta, returned_climate_stats = _build_feature_matrix(df, feature_set, climate_fit_stats)
+    y = (df_clean["nivel_inc"] == 2).astype(int)
+    return X, y.reset_index(drop=True), meta, returned_climate_stats
 
 
 def build_features_for_split(
@@ -156,6 +203,35 @@ def build_features_for_split(
         [CITY_COL, "quarter_start"]
     )
     X_all, y_all, meta_all, _ = build_features(
+        combined, feature_set, climate_fit_stats=climate_stats
+    )
+    eval_quarters = set(eval_df["quarter_start"].unique())
+    eval_mask = meta_all["quarter_start"].isin(eval_quarters)
+
+    X_eval    = X_all[eval_mask].reset_index(drop=True)
+    y_eval    = y_all[eval_mask].reset_index(drop=True)
+    meta_eval = meta_all[eval_mask].reset_index(drop=True)
+
+    return X_tr, y_tr, X_eval, y_eval, meta_eval, climate_stats
+
+
+def build_classification_features_for_split(
+    train_df: pd.DataFrame,
+    eval_df: pd.DataFrame,
+    feature_set: str,
+) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series, pd.DataFrame, Optional[pd.DataFrame]]:
+    """
+    Classification counterpart of `build_features_for_split` -- identical
+    train/eval feature construction (combined-history lags, train-only climate
+    stats), but `y` is the binary is_epidemic label from
+    `build_classification_features` instead of log1p(casos_est).
+    """
+    X_tr, y_tr, _, climate_stats = build_classification_features(train_df, feature_set)
+
+    combined = pd.concat([train_df, eval_df], ignore_index=True).sort_values(
+        [CITY_COL, "quarter_start"]
+    )
+    X_all, y_all, meta_all, _ = build_classification_features(
         combined, feature_set, climate_fit_stats=climate_stats
     )
     eval_quarters = set(eval_df["quarter_start"].unique())

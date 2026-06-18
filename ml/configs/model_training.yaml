@@ -84,3 +84,37 @@ sarima:
     P: [0, 1]
     D: [0, 1]
     Q: [0, 1]
+
+# Binary "epidemic this quarter" classifier -- separate, parallel evaluation
+# track (see validation/nested_cv_classifier.py), not part of the point-
+# regression MODEL_NAMES registry.
+classification:
+  n_trials: 30        # smaller search budget than xgboost/xrfm -- far fewer
+                       # rows (~150-250) and a simpler decision surface
+  feature_set: cases_only   # smallest dimensionality, given the small-N risk
+
+logreg:
+  default_params:
+    class_weight: balanced
+    max_iter: 1000
+    C: 1.0
+  param_distributions:
+    C: [0.01, 0.03, 0.1, 0.3, 1.0, 3.0, 10.0]
+
+xgb_classifier:
+  # Shallower/fewer trees than the regression xgboost: block -- same overfitting
+  # concern, but more acute here given the much smaller row count.
+  default_params:
+    n_estimators: 100
+    max_depth: 3
+    learning_rate: 0.05
+    subsample: 0.8
+    colsample_bytree: 0.8
+    min_child_weight: 5
+    objective: "binary:logistic"
+    eval_metric: "aucpr"
+  param_distributions:
+    n_estimators:     [50, 100, 200, 300]
+    max_depth:         [2, 3, 4]
+    learning_rate:     [0.01, 0.03, 0.05, 0.1]
+    min_child_weight:  [3, 5, 10, 15]

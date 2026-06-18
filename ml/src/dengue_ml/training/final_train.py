@@ -104,7 +104,14 @@ def train_final_model(
 
 
 def select_best_model(fold_metrics: pd.DataFrame) -> tuple[str, float]:
-    """Return (best_model_name, mean_mae) based on mean MAE across outer folds and cities."""
-    summary = fold_metrics.groupby("model")["mae"].mean()
+    """
+    Return (best_model_name, median_mae) based on median MAE across outer
+    folds and cities. Median rather than mean: mean MAE is dominated by the
+    single 2024 outbreak fold (~7x any prior year, mae_std >> mae_median for
+    every model), so it picks whichever model happens to handle that one
+    anomalous fold best rather than whichever is most accurate in a typical
+    quarter.
+    """
+    summary = fold_metrics.groupby("model")["mae"].median()
     best = summary.idxmin()
     return best, float(summary[best])

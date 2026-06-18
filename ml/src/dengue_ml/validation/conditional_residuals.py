@@ -35,6 +35,7 @@ def _quantile_bounds() -> tuple[float, float]:
 def assign_loFo_conditional_ci(
     fold_predictions: pd.DataFrame,
     model_name: str,
+    high_regime_mask: pd.Series | None = None,
 ) -> pd.DataFrame:
     """
     Leave-one-fold-out conditional residual quantile intervals for OOF reporting.
@@ -44,11 +45,23 @@ def assign_loFo_conditional_ci(
     regime from all *other* folds, and applies them as an offset to that
     fold's own point predictions. A fold never uses its own residuals to
     calibrate its own band.
+
+    high_regime_mask : optional precomputed boolean Series, indexed like
+        `sub` (the model's rows), to use instead of `PROXY_COL >=
+        REGIME_THRESHOLD` -- lets the exact same LOFO math be reused to
+        evaluate alternate regime proxies (e.g. sustained_rt, or a trained
+        classifier's thresholded probability) without touching the default
+        path. None (default) reproduces today's production behavior exactly.
     """
     lower_q, upper_q = _quantile_bounds()
     sub = fold_predictions[fold_predictions["model"] == model_name].copy()
     log_resid = np.log1p(sub[TARGET]) - np.log1p(sub["predicted"])
     sub["_log_resid"] = log_resid
+
+    if high_regime_mask is None:
+        sub["_is_high"] = sub[PROXY_COL] >= REGIME_THRESHOLD
+    else:
+        sub["_is_high"] = high_regime_mask.reindex(sub.index)
 
     q_lower = pd.Series(np.nan, index=sub.index)
     q_upper = pd.Series(np.nan, index=sub.index)
@@ -57,11 +70,9 @@ def assign_loFo_conditional_ci(
         calib = sub[sub["fold"] != fold]
 
         for is_high in (True, False):
-            calib_mask = (calib[PROXY_COL] >= REGIME_THRESHOLD) if is_high else (calib[PROXY_COL] < REGIME_THRESHOLD)
+            calib_mask = calib["_is_high"] == is_high
             bin_resid = calib.loc[calib_mask, "_log_resid"]
-            held_out_mask = (sub["fold"] == fold) & (
-                (sub[PROXY_COL] >= REGIME_THRESHOLD) if is_high else (sub[PROXY_COL] < REGIME_THRESHOLD)
-            )
+            held_out_mask = (sub["fold"] == fold) & (sub["_is_high"] == is_high)
             q_lower.loc[held_out_mask] = bin_resid.quantile(lower_q)
             q_upper.loc[held_out_mask] = bin_resid.quantile(upper_q)
 
@@ -74,10 +85,37 @@ def assign_loFo_conditional_ci(
     lower = np.minimum(lower, sub["predicted"])
     upper = np.maximum(upper, sub["predicted"])
 
+    if high_regime_mask is not None:
+        return sub.assign(lower_95=lower, upper_95=upper)
+
     fold_predictions = fold_predictions.copy()
     fold_predictions.loc[sub.index, "lower_95"] = lower
     fold_predictions.loc[sub.index, "upper_95"] = upper
     return fold_predictions
+
+
+def compute_regime_coverage(
+    fold_predictions: pd.DataFrame,
+    model_name: str,
+    high_regime_mask: pd.Series | None = None,
+) -> dict:
+    """
+    LOFO coverage + regime bin sizes for an arbitrary regime-split candidate
+    (the existing nivel_inc rule, the sustained_rt rule, or a trained
+    classifier's thresholded probability), reusing assign_loFo_conditional_ci's
+    exact math so results are directly comparable to the production proxy's
+    ~92.5-93% baseline. Does not mutate fold_predictions or PROXY_SOURCE_FEATURE.
+    high_regime_mask=None reproduces the production nivel_inc proxy.
+    """
+    result = assign_loFo_conditional_ci(fold_predictions, model_name, high_regime_mask=high_regime_mask)
+    sub = result[result["model"] == model_name]
+    is_high = sub[PROXY_COL] >= REGIME_THRESHOLD if high_regime_mask is None else sub["_is_high"]
+    in_band = (sub[TARGET] >= sub["lower_95"]) & (sub[TARGET] <= sub["upper_95"])
+    return {
+        "coverage": float(in_band.mean()),
+        "n_high": int(is_high.sum()),
+        "n_low": int((~is_high).sum()),
+    }
 
 
 def compute_residual_quantile_table(

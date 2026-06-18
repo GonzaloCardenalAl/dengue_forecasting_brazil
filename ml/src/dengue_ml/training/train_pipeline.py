@@ -52,7 +52,7 @@ def run_training_pipeline(
     print(improvement.to_string(index=False))
 
     best_model, best_mae = select_best_model(fold_metrics)
-    print(f"\nBest model (by mean MAE): {best_model}")
+    print(f"\nBest model (by median MAE): {best_model}")
     plot_oof_predictions(fold_predictions, best_model, outputs_dir=outputs_dir, log_scale=False)
     plot_oof_predictions(fold_predictions, best_model, outputs_dir=outputs_dir, log_scale=True)
     print(f"OOF predictions plots saved for '{best_model}' (log + linear)")

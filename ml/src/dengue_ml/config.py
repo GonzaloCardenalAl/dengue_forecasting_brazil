@@ -40,6 +40,11 @@ RANDOM_SEED      = _tcfg["random_seed"]
 XGB_N_TRIALS     = _tcfg["hyperparameter_search"]["xgb_n_trials"]
 XRFM_N_TRIALS    = _tcfg["hyperparameter_search"]["xrfm_n_trials"]
 
+# ── Epidemic classifier (separate, parallel evaluation track) ────────────────
+CLASSIFICATION_N_TRIALS      = _tcfg["classification"]["n_trials"]
+CLASSIFICATION_FEATURE_SET   = _tcfg["classification"]["feature_set"]
+CLASSIFIER_MODEL_NAMES       = ["logreg", "xgb_clf"]
+
 # ── CV splits ────────────────────────────────────────────────────────────────
 # Outer fold cutoffs: train ≤ cutoff, test = next FORECAST_HORIZON quarters.
 # 10 folds, stepping annually from 2015Q4 → 2024Q4.
