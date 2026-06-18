@@ -6,8 +6,9 @@ from pathlib import Path
 
 from dengue_ml.config import CITY_COL, TARGET, CITIES
 from dengue_ml.preprocessing import prepare_model_table
-from dengue_ml.features.feature_pipeline import build_features, FEATURE_COLS
+from dengue_ml.features.feature_pipeline import build_features, build_features_for_split, FEATURE_COLS
 from dengue_ml.models.xgboost_models import train_xgb
+from dengue_ml.models.xrfm_models import train_xrfm
 from dengue_ml.models.sarima import fit_sarima, tune_sarima
 from dengue_ml.validation.time_splits import make_inner_splits
 from dengue_ml.validation.conditional_residuals import compute_residual_quantile_table, PROXY_COL
@@ -54,13 +55,29 @@ def train_final_model(
         joblib.dump(artifact, outputs_dir / "final_model.pkl")
         return artifact
 
-    # XGBoost
     from dengue_ml.config import FEATURE_SET_FOR_MODEL
     feature_set = FEATURE_SET_FOR_MODEL[selected_model_name]
-    X_tr, y_tr, _, climate_stats = build_features(df, feature_set)
-    feature_cols = list(X_tr.columns)
 
-    model = train_xgb(X_tr, y_tr, params=selected_params)
+    if selected_model_name.startswith("xgb"):
+        X_tr, y_tr, _, climate_stats = build_features(df, feature_set)
+        feature_cols = list(X_tr.columns)
+        model = train_xgb(X_tr, y_tr, params=selected_params)
+    else:
+        # xRFM requires a held-out X_val/y_val for fit() (used internally for
+        # early stopping) -- carve the most-recent-horizon-quarters tail off
+        # of df the same way nested_cv.py does. climate_stats for the
+        # production artifact must still reflect the FULL df (used later at
+        # forecast time), not just train_tail, so it's fit separately here.
+        inner_splits = make_inner_splits(df)
+        if not inner_splits:
+            raise ValueError(
+                f"Not enough history to carve an xRFM val split for {selected_model_name}."
+            )
+        train_tail, val_tail = inner_splits[-1]
+        X_tr, y_tr, X_val, y_val, _, _ = build_features_for_split(train_tail, val_tail, feature_set)
+        _, _, _, climate_stats = build_features(df, feature_set)
+        feature_cols = list(X_tr.columns)
+        model = train_xrfm(X_tr, y_tr, X_val, y_val, params=selected_params)
 
     residual_quantiles = None
     if fold_predictions is not None:

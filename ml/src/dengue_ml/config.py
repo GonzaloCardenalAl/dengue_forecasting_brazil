@@ -38,6 +38,7 @@ FORECAST_HORIZON = _tcfg["cv"]["forecast_horizon"]  # quarters ahead
 N_INNER_FOLDS    = _tcfg["cv"]["n_inner_folds"]
 RANDOM_SEED      = _tcfg["random_seed"]
 XGB_N_TRIALS     = _tcfg["hyperparameter_search"]["xgb_n_trials"]
+XRFM_N_TRIALS    = _tcfg["hyperparameter_search"]["xrfm_n_trials"]
 
 # ── CV splits ────────────────────────────────────────────────────────────────
 # Outer fold cutoffs: train ≤ cutoff, test = next FORECAST_HORIZON quarters.
@@ -65,12 +66,18 @@ MODEL_NAMES = [
     "xgb_cases_only",
     "xgb_cases_climate",
     "xgb_cases_climate_sst",
+    "xrfm_cases_only",
+    "xrfm_cases_climate",
+    "xrfm_cases_climate_sst",
 ]
 
 FEATURE_SET_FOR_MODEL = {
-    "xgb_cases_only":       "cases_only",
-    "xgb_cases_climate":    "cases_climate",
+    "xgb_cases_only":        "cases_only",
+    "xgb_cases_climate":     "cases_climate",
     "xgb_cases_climate_sst": "cases_climate_sst",
+    "xrfm_cases_only":        "cases_only",
+    "xrfm_cases_climate":     "cases_climate",
+    "xrfm_cases_climate_sst": "cases_climate_sst",
 }
 
 # ── ENSO thresholds ───────────────────────────────────────────────────────────

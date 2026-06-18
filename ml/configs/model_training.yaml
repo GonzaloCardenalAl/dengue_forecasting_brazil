@@ -9,7 +9,9 @@ cv:
   n_inner_folds: 3
 
 hyperparameter_search:
-  xgb_n_trials: 30      # random search trials per outer fold
+  xgb_n_trials: 50      # random search trials per outer fold
+  xrfm_n_trials: 30     # matches xgb's budget -- measured runtime is cheap
+                         # (~25s/fold/feature-set), so no need to under-budget it
 
 xgboost:
   # Used when no search params are supplied (e.g. quick smoke tests).
@@ -21,23 +23,57 @@ xgboost:
     colsample_bytree: 0.8
     min_child_weight: 3
     reg_lambda: 1.0
+    reg_alpha: 0.0
+    gamma: 0.0
     objective: "reg:squarederror"
 
-  # Random search draws one value per key, independently, each trial.
+  # Random search draws one value per key, independently, each trial. Widened
+  # vs. the original grid -- train sets here are small (~100-200 rows/fold),
+  # so the wider min_child_weight/reg_lambda/reg_alpha values matter for
+  # letting the search find more regularization, not just bigger trees.
   param_distributions:
-    n_estimators:     [100, 200, 300, 500]
-    max_depth:         [3, 4, 5, 6]
-    learning_rate:     [0.01, 0.03, 0.05, 0.1]
-    subsample:         [0.6, 0.7, 0.8, 1.0]
-    colsample_bytree:  [0.6, 0.7, 0.8, 1.0]
-    min_child_weight:  [1, 3, 5, 10]
-    reg_lambda:        [0.1, 0.5, 1.0, 5.0]
+    n_estimators:     [100, 200, 300, 500, 700, 1000]
+    max_depth:         [2, 3, 4, 5, 6, 7, 8]
+    learning_rate:     [0.005, 0.01, 0.03, 0.05, 0.1, 0.2]
+    subsample:         [0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+    colsample_bytree:  [0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+    min_child_weight:  [1, 3, 5, 10, 15, 20]
+    reg_lambda:        [0.1, 0.5, 1.0, 5.0, 10.0]
+    reg_alpha:         [0.0, 0.1, 0.5, 1.0, 5.0]
+    gamma:             [0.0, 0.1, 0.5, 1.0]
 
   # Target interval level for conditional-residual-quantile prediction
   # intervals (see validation/conditional_residuals.py).
   quantiles:
     lower: 0.025
     upper: 0.975
+
+xrfm:
+  # rfm_params is nested {'model': {...}, 'fit': {...}} for the xRFM library;
+  # these flat keys are split into that shape in models/xrfm_models.py.
+  default_params:
+    kernel: l2
+    bandwidth: 10.0
+    exponent: 1.0
+    diag: false
+    bandwidth_mode: constant
+    reg: 1.0e-3
+    iters: 3
+    early_stop_rfm: true
+    get_agop_best_model: true
+    return_best_params: true
+
+  # Random search draws one value per key, independently, each trial.
+  # bandwidth's natural scale (now that features are standardized -- see
+  # xrfm_models.py's _ScaledXRFM) is roughly sqrt(n_features), i.e. ~6-11 for
+  # these feature sets; widened beyond that to let the search find it rather
+  # than assume it.
+  param_distributions:
+    bandwidth:  [1.0, 3.0, 5.0, 10.0, 20.0, 30.0, 50.0]
+    reg:        [1.0e-4, 1.0e-3, 1.0e-2, 1.0e-1]
+    iters:      [1, 2, 3, 5]
+    exponent:   [0.5, 1.0, 1.5, 2.0]
+    diag:       [true, false]
 
 sarima:
   seasonal_period: 4   # m=4 (quarterly seasonality)

@@ -4,7 +4,7 @@
 #SBATCH --error=logs/%x_%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --time=12:00:00
+#SBATCH --time=18:00:00
 #SBATCH --mem-per-cpu=8G
 
 # ── Project root ──────────────────────────────────────────────────────────────

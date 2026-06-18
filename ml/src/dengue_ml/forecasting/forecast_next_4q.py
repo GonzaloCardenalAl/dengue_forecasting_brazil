@@ -5,6 +5,7 @@ import joblib
 from dengue_ml.config import CITY_COL, TARGET, FORECAST_HORIZON, CITIES
 from dengue_ml.features.feature_pipeline import build_features
 from dengue_ml.models.xgboost_models import predict_xgb
+from dengue_ml.models.xrfm_models import predict_xrfm
 from dengue_ml.models.sarima import forecast_sarima
 from dengue_ml.validation.conditional_residuals import apply_residual_quantile_table
 
@@ -36,7 +37,13 @@ def generate_next_4q_forecast(
     if model_name == "sarima":
         return _forecast_sarima(artifact, latest_df, horizon)
 
-    return _forecast_xgb(artifact, latest_df, horizon)
+    if model_name.startswith("xgb"):
+        return _forecast_xgb(artifact, latest_df, horizon)
+
+    if model_name.startswith("xrfm"):
+        return _forecast_xrfm(artifact, latest_df, horizon)
+
+    raise ValueError(f"Unknown model_name '{model_name}' for forecasting.")
 
 
 # ── Baseline ──────────────────────────────────────────────────────────────────
@@ -162,6 +169,84 @@ def _forecast_xgb(
             })
 
             # Append prediction to history for next-step lag computation
+            stub_row = stubs[stubs[CITY_COL] == city].copy()
+            stub_row[TARGET] = preds[i]
+            history = pd.concat([history, stub_row], ignore_index=True)
+
+    return pd.DataFrame(rows)
+
+
+# ── xRFM ──────────────────────────────────────────────────────────────────────
+
+def _forecast_xrfm(
+    artifact: dict, latest_df: pd.DataFrame, horizon: int
+) -> pd.DataFrame:
+    """
+    Autoregressive multi-step forecast for xRFM — identical loop shape to
+    _forecast_xgb; xRFM's val-set requirement only applies at fit time
+    (already satisfied when the model in `artifact` was trained), so this
+    is a pure inference loop just like XGBoost's.
+    """
+    feature_set  = artifact["feature_set"]
+    climate_stats = artifact.get("climate_stats")
+    model        = artifact["model"]
+    residual_quantiles = artifact.get("residual_quantiles")
+
+    history = latest_df.copy()
+    last_q  = history["quarter_start"].max()
+    future_qs = _next_quarters(last_q, horizon)
+
+    rows = []
+    for q in future_qs:
+        stubs = pd.DataFrame([
+            {
+                CITY_COL: city,
+                "quarter_start": q,
+                TARGET: np.nan,
+                "tempmed": _last_val(history, city, "tempmed"),
+                "humidmed": _last_val(history, city, "humidmed"),
+                "transmissao": _last_val(history, city, "transmissao"),
+                "receptivo": _last_val(history, city, "receptivo"),
+                "nivel_inc": _last_val(history, city, "nivel_inc"),
+                "pop": _last_val(history, city, "pop"),
+                "p_inc100k": _last_val(history, city, "p_inc100k"),
+                "nino34_anom": _last_val(history, None, "nino34_anom"),
+                "roni": _last_val(history, None, "roni"),
+            }
+            for city in CITIES
+        ])
+
+        extended = pd.concat([history, stubs], ignore_index=True).sort_values(
+            [CITY_COL, "quarter_start"]
+        )
+
+        X_all, _, meta_all, _ = build_features(
+            extended, feature_set, climate_fit_stats=climate_stats
+        )
+        mask = meta_all["quarter_start"] == q
+
+        if mask.sum() == 0:
+            continue
+
+        X_q = X_all[mask]
+        cities_q = meta_all[mask][CITY_COL].values
+
+        preds = np.expm1(predict_xrfm(model, X_q))
+        if residual_quantiles is not None:
+            proxy = X_q[residual_quantiles["proxy_col"]].values
+            lower, upper = apply_residual_quantile_table(preds, proxy, residual_quantiles)
+        else:
+            lower = upper = np.full_like(preds, np.nan)
+
+        for i, city in enumerate(cities_q):
+            rows.append({
+                "city": city, "forecast_quarter": q,
+                "predicted_cases": float(preds[i]),
+                "lower_95": float(lower[i]),
+                "upper_95": float(upper[i]),
+                "model_name": artifact["model_name"],
+            })
+
             stub_row = stubs[stubs[CITY_COL] == city].copy()
             stub_row[TARGET] = preds[i]
             history = pd.concat([history, stub_row], ignore_index=True)

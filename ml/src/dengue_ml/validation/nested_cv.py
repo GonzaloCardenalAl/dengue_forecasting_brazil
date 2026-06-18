@@ -5,11 +5,12 @@ from dengue_ml.config import (
     TARGET, CITY_COL, FORECAST_HORIZON,
     MODEL_NAMES, FEATURE_SET_FOR_MODEL, CITIES,
 )
-from dengue_ml.features.feature_pipeline import build_features
+from dengue_ml.features.feature_pipeline import build_features_for_split
 from dengue_ml.models.baseline import seasonal_naive_forecast
 from dengue_ml.models.sarima import tune_sarima, fit_sarima, forecast_sarima
 from dengue_ml.models.xgboost_models import train_xgb, predict_xgb
-from dengue_ml.training.hyperparameter_search import random_search_xgb
+from dengue_ml.models.xrfm_models import train_xrfm, predict_xrfm
+from dengue_ml.training.hyperparameter_search import random_search_xgb, random_search_xrfm
 from dengue_ml.validation.time_splits import make_outer_splits, make_inner_splits
 from dengue_ml.validation.metrics import calculate_all_metrics
 from dengue_ml.validation.conditional_residuals import (
@@ -128,32 +129,59 @@ def _run_one_model(
 
         return pd.concat(city_preds, ignore_index=True), city_hparams
 
-    # XGBoost variants
-    feature_set = FEATURE_SET_FOR_MODEL[model_name]
-    best_params = random_search_xgb(outer_train, feature_set, inner_splits)
+    if model_name.startswith("xgb"):
+        feature_set = FEATURE_SET_FOR_MODEL[model_name]
+        best_params = random_search_xgb(outer_train, feature_set, inner_splits)
 
-    X_tr, y_tr, _, climate_stats = build_features(outer_train, feature_set)
+        X_tr, y_tr, X_te, _, meta_te, _ = build_features_for_split(
+            outer_train, outer_test, feature_set
+        )
 
-    # Build test features: join outer_test rows (lag features need train history)
-    full_df_for_test = pd.concat([outer_train, outer_test], ignore_index=True).sort_values(
-        [CITY_COL, "quarter_start"]
-    )
-    X_all, _, meta_all, _ = build_features(
-        full_df_for_test, feature_set, climate_fit_stats=climate_stats
-    )
-    test_quarters = set(outer_test["quarter_start"].unique())
-    test_mask = meta_all["quarter_start"].isin(test_quarters)
+        model = train_xgb(X_tr, y_tr, params=best_params)
+        preds = np.expm1(predict_xgb(model, X_te))
 
-    X_te   = X_all[test_mask]
-    meta_te = meta_all[test_mask].reset_index(drop=True)
+        preds_df = meta_te.copy()
+        preds_df["predicted"]  = preds
+        # CI is calibrated later (in run_nested_cv, across all folds at once) from
+        # this model's own OOF residuals, conditioned on growth_proxy — see
+        # conditional_residuals.py. lower_95/upper_95 filled in there.
+        preds_df[PROXY_COL] = X_te[PROXY_SOURCE_FEATURE].values
+        return preds_df, best_params
 
-    model = train_xgb(X_tr, y_tr, params=best_params)
-    preds = np.expm1(predict_xgb(model, X_te))
+    if model_name.startswith("xrfm"):
+        feature_set = FEATURE_SET_FOR_MODEL[model_name]
 
-    preds_df = meta_te.copy()
-    preds_df["predicted"]  = preds
-    # CI is calibrated later (in run_nested_cv, across all folds at once) from
-    # this model's own OOF residuals, conditioned on growth_proxy — see
-    # conditional_residuals.py. lower_95/upper_95 filled in there.
-    preds_df[PROXY_COL] = X_te[PROXY_SOURCE_FEATURE].values
-    return preds_df, best_params
+        # xRFM's fit() requires a held-out X_val/y_val (used internally for
+        # early stopping), unlike XGBoost which trains on 100% of outer_train.
+        # inner_splits' last entry is exactly "all-but-the-most-recent-horizon-
+        # quarters vs. the most-recent-horizon-quarters" — reuse it instead of
+        # carving a separate split. This means xRFM's kernel regression only
+        # sees train_tail as support points (slightly less history than
+        # XGBoost gets), an inherent consequence of the required val split.
+        if not inner_splits:
+            raise ValueError(
+                f"Not enough history in outer_train to carve an xRFM val "
+                f"split for {model_name}."
+            )
+        train_tail, val_tail = inner_splits[-1]
+
+        best_params = random_search_xrfm(outer_train, feature_set, inner_splits)
+
+        X_tr, y_tr, X_val, y_val, _, _ = build_features_for_split(
+            train_tail, val_tail, feature_set
+        )
+        # Test features still use the FULL outer_train as history (not
+        # train_tail) + outer_test, matching XGBoost's test construction.
+        _, _, X_te, _, meta_te, _ = build_features_for_split(
+            outer_train, outer_test, feature_set
+        )
+
+        model = train_xrfm(X_tr, y_tr, X_val, y_val, params=best_params)
+        preds = np.expm1(predict_xrfm(model, X_te))
+
+        preds_df = meta_te.copy()
+        preds_df["predicted"] = preds
+        preds_df[PROXY_COL] = X_te[PROXY_SOURCE_FEATURE].values
+        return preds_df, best_params
+
+    raise ValueError(f"Unknown model_name '{model_name}'.")

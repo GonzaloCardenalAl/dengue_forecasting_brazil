@@ -136,3 +136,33 @@ def build_features(
     meta = df_clean[[CITY_COL, "quarter_start"]].reset_index(drop=True)
 
     return X.reset_index(drop=True), y.reset_index(drop=True), meta, returned_climate_stats
+
+
+def build_features_for_split(
+    train_df: pd.DataFrame,
+    eval_df: pd.DataFrame,
+    feature_set: str,
+) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series, pd.DataFrame, Optional[pd.DataFrame]]:
+    """
+    Build (X_train, y_train, X_eval, y_eval, meta_eval, climate_stats) for a
+    train/eval pair, where eval_df's lag features are computed using combined
+    history (train_df + eval_df) so lags remain valid, then masked back down
+    to only eval_df's quarters. climate_fit_stats are always fit on train_df
+    only (no leakage from eval_df's climate distribution).
+    """
+    X_tr, y_tr, _, climate_stats = build_features(train_df, feature_set)
+
+    combined = pd.concat([train_df, eval_df], ignore_index=True).sort_values(
+        [CITY_COL, "quarter_start"]
+    )
+    X_all, y_all, meta_all, _ = build_features(
+        combined, feature_set, climate_fit_stats=climate_stats
+    )
+    eval_quarters = set(eval_df["quarter_start"].unique())
+    eval_mask = meta_all["quarter_start"].isin(eval_quarters)
+
+    X_eval    = X_all[eval_mask].reset_index(drop=True)
+    y_eval    = y_all[eval_mask].reset_index(drop=True)
+    meta_eval = meta_all[eval_mask].reset_index(drop=True)
+
+    return X_tr, y_tr, X_eval, y_eval, meta_eval, climate_stats
