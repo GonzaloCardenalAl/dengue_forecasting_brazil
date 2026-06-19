@@ -5,7 +5,13 @@
 random_seed: 42
 
 cv:
-  forecast_horizon: 12  # months ahead per outer fold / forecast horizon
+  forecast_horizon: 52  # weeks ahead -- only used as the production forecast's
+                         # default lookahead (forecast_next_52w.py) and as
+                         # SARIMA's forecast_sarima() default; the outer/inner
+                         # CV split functions use calendar-date arithmetic
+                         # instead (see validation/time_splits.py), not this
+                         # as a row-count slicer, since calendar years have
+                         # 52 or 53 weeks depending on the year.
   n_inner_folds: 3
 
 hyperparameter_search:
@@ -76,14 +82,21 @@ xrfm:
     diag:       [true, false]
 
 sarima:
-  seasonal_period: 12  # m=12 (monthly seasonality)
+  seasonal_period: 52  # m=52 (weekly seasonality)
+  # Seasonal grid trimmed for m=52's much higher per-fit cost vs m=12:
+  # Q fixed to 0 (seasonal MA is the most expensive, least-identifiable term
+  # at this lag, and most prone to Kalman-filter non-convergence); D fixed to
+  # 1 (seasonal differencing is almost always needed for a strongly,
+  # recurringly seasonal series like annual dengue outbreaks, so D=0 is the
+  # least likely branch to be selected anyway). p/d/q/P kept at their full
+  # range. 24 combos (was 96) -- if still too slow, drop p to [0, 1] next.
   param_grid:
     p: [0, 1, 2]
     d: [0, 1]
     q: [0, 1]
     P: [0, 1]
-    D: [0, 1]
-    Q: [0, 1]
+    D: [1]
+    Q: [0]
 
 # Binary "epidemic this month" classifier -- separate, parallel evaluation
 # track (see validation/nested_cv_classifier.py), not part of the point-

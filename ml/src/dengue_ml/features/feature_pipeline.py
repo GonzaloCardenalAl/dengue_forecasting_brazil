@@ -10,8 +10,9 @@ from dengue_ml.features.sst_features import add_sst_features
 from dengue_ml.features.weekly_lag_features import add_weekly_lag_features
 from dengue_ml.features.monthly_lag_features import add_monthly_lag_features
 
-# Lookback windows for week-level lag features (replaces month-level raw lags
-# cases_lag_3m/6m/12m and temp/humid_lag_3m/6m with the actual weekly trajectory).
+# Lookback windows for week-level lag features (supplements the coarser raw
+# aggregate lags cases_lag_13w/26w/52w and temp/humid_lag_13w/26w in
+# target_lag_features.py/climate_features.py with the actual weekly trajectory).
 N_WEEKS_CASES   = 12  # ~3 months of weekly resolution
 N_WEEKS_CLIMATE = 8
 
@@ -34,11 +35,11 @@ _ALERT_VALUE_COLS = [
 FEATURE_COLS: dict[str, list[str]] = {}
 
 _TEMPORAL_COLS = [
-    "year", "month", "time_index", "month_sin", "month_cos",
+    "year", "week", "time_index", "week_sin", "week_cos",
 ]
 _TARGET_LAG_COLS = [
-    "cases_rolling_mean_6m", "cases_rolling_mean_12m", "cases_rolling_std_12m",
-    "cases_growth_3m", "cases_growth_12m",
+    "cases_rolling_mean_26w", "cases_rolling_mean_52w", "cases_rolling_std_52w",
+    "cases_growth_13w", "cases_growth_52w",
 ]
 _WEEKLY_CASES_COLS = (
     [f"cases_week_t-{i}" for i in range(1, N_WEEKS_CASES + 1)]
@@ -46,7 +47,7 @@ _WEEKLY_CASES_COLS = (
 )
 _CLIMATE_COLS = [
     "tempmed", "humidmed",
-    "temp_rolling_mean_6m", "humid_rolling_mean_6m",
+    "temp_rolling_mean_26w", "humid_rolling_mean_26w",
     "temp_anomaly", "humid_anomaly",
 ]
 _WEEKLY_CLIMATE_COLS = (
@@ -94,7 +95,7 @@ def _build_feature_matrix(
                      all original columns, e.g. `nivel_inc`, for the caller to
                      derive its own `y` from)
     X             : feature DataFrame (cols restricted to `feature_set`)
-    meta          : city + month_start columns (for reporting)
+    meta          : city + week_start columns (for reporting)
     climate_stats : fit_stats to reuse at inference (None for cases_only)
     """
     if feature_set not in FEATURE_COLS:
@@ -116,7 +117,7 @@ def _build_feature_matrix(
             df, value_col="tempmed", prefix="temp", n_weeks=N_WEEKS_CLIMATE,
         )
         df = add_weekly_lag_features(
-            df, value_col="umidmed", prefix="humid", n_weeks=N_WEEKS_CLIMATE,
+            df, value_col="humidmed", prefix="humid", n_weeks=N_WEEKS_CLIMATE,
         )
 
     if feature_set == "cases_climate_sst":
@@ -130,7 +131,7 @@ def _build_feature_matrix(
     df_clean = df.dropna(subset=cols).copy()
 
     X    = df_clean[cols]
-    meta = df_clean[[CITY_COL, "month_start"]].reset_index(drop=True)
+    meta = df_clean[[CITY_COL, "week_start"]].reset_index(drop=True)
 
     return df_clean.reset_index(drop=True), X.reset_index(drop=True), meta, returned_climate_stats
 
@@ -145,7 +146,7 @@ def build_features(
 
     Parameters
     ----------
-    df : monthly model table (output of prepare_model_table)
+    df : weekly model table (output of prepare_model_table)
     feature_set : one of 'cases_only', 'cases_climate', 'cases_climate_sst'
     climate_fit_stats : pre-computed city means for climate anomaly.
                         None → compute from df (training mode).
@@ -154,7 +155,7 @@ def build_features(
     -------
     X            : feature DataFrame
     y            : log1p(casos_est) Series
-    meta         : city + month_start columns (for reporting)
+    meta         : city + week_start columns (for reporting)
     climate_stats: fit_stats to reuse at inference (None for cases_only)
     """
     df_clean, X, meta, returned_climate_stats = _build_feature_matrix(df, feature_set, climate_fit_stats)
@@ -169,16 +170,16 @@ def build_classification_features(
 ) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, Optional[pd.DataFrame]]:
     """
     Same leak-free feature columns as `build_features`, but with the binary
-    "epidemic this month" label (`nivel_inc == 2`, the monthly max already
-    computed by `aggregate_dengue_to_monthly` from weeks *within* the target
-    month -- valid as a label, never used as a feature) instead of
+    "epidemic this week" label (`nivel_inc == 2`, InfoDengue's own
+    week-level alert level -- valid as a label, never used as a feature)
+    instead of
     log1p(casos_est).
 
     Returns
     -------
     X            : feature DataFrame (identical columns to build_features)
-    y            : binary is_epidemic Series (1 = nivel_inc==2 this month)
-    meta         : city + month_start columns (for reporting)
+    y            : binary is_epidemic Series (1 = nivel_inc==2 this week)
+    meta         : city + week_start columns (for reporting)
     climate_stats: fit_stats to reuse at inference (None for cases_only)
     """
     df_clean, X, meta, returned_climate_stats = _build_feature_matrix(df, feature_set, climate_fit_stats)
@@ -195,19 +196,19 @@ def build_features_for_split(
     Build (X_train, y_train, X_eval, y_eval, meta_eval, climate_stats) for a
     train/eval pair, where eval_df's lag features are computed using combined
     history (train_df + eval_df) so lags remain valid, then masked back down
-    to only eval_df's months. climate_fit_stats are always fit on train_df
+    to only eval_df's weeks. climate_fit_stats are always fit on train_df
     only (no leakage from eval_df's climate distribution).
     """
     X_tr, y_tr, _, climate_stats = build_features(train_df, feature_set)
 
     combined = pd.concat([train_df, eval_df], ignore_index=True).sort_values(
-        [CITY_COL, "month_start"]
+        [CITY_COL, "week_start"]
     )
     X_all, y_all, meta_all, _ = build_features(
         combined, feature_set, climate_fit_stats=climate_stats
     )
-    eval_months = set(eval_df["month_start"].unique())
-    eval_mask = meta_all["month_start"].isin(eval_months)
+    eval_weeks = set(eval_df["week_start"].unique())
+    eval_mask = meta_all["week_start"].isin(eval_weeks)
 
     X_eval    = X_all[eval_mask].reset_index(drop=True)
     y_eval    = y_all[eval_mask].reset_index(drop=True)
@@ -230,13 +231,13 @@ def build_classification_features_for_split(
     X_tr, y_tr, _, climate_stats = build_classification_features(train_df, feature_set)
 
     combined = pd.concat([train_df, eval_df], ignore_index=True).sort_values(
-        [CITY_COL, "month_start"]
+        [CITY_COL, "week_start"]
     )
     X_all, y_all, meta_all, _ = build_classification_features(
         combined, feature_set, climate_fit_stats=climate_stats
     )
-    eval_months = set(eval_df["month_start"].unique())
-    eval_mask = meta_all["month_start"].isin(eval_months)
+    eval_weeks = set(eval_df["week_start"].unique())
+    eval_mask = meta_all["week_start"].isin(eval_weeks)
 
     X_eval    = X_all[eval_mask].reset_index(drop=True)
     y_eval    = y_all[eval_mask].reset_index(drop=True)

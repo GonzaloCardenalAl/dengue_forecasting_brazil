@@ -39,11 +39,11 @@ def plot_historical_cases(df: pd.DataFrame, outputs_dir: Path | None = None) -> 
     fig, axes = plt.subplots(2, 2, figsize=(14, 8), sharex=True)
     axes = axes.flatten()
     for ax, city in zip(axes, CITIES):
-        sub = df[df[CITY_COL] == city].sort_values("month_start")
-        ax.bar(sub["month_start"], sub[TARGET], width=20, color=CITY_COLORS[city], alpha=0.8)
+        sub = df[df[CITY_COL] == city].sort_values("week_start")
+        ax.bar(sub["week_start"], sub[TARGET], width=5, color=CITY_COLORS[city], alpha=0.8)
         ax.set_title(city)
         ax.set_ylabel("Estimated cases")
-    fig.suptitle("Historical dengue cases by city (monthly)", fontsize=13)
+    fig.suptitle("Historical dengue cases by city (weekly)", fontsize=13)
     fig.tight_layout()
     _savefig("historical_cases.png", fig, outputs_dir)
 
@@ -52,13 +52,14 @@ def plot_seasonality(df: pd.DataFrame, outputs_dir: Path | None = None) -> None:
     fig, ax = plt.subplots(figsize=(8, 5))
     for city in CITIES:
         sub = df[df[CITY_COL] == city].copy()
-        seasonal = sub.groupby(sub["month_start"].dt.month)[TARGET].median()
+        iso_week = sub["week_start"].dt.isocalendar()["week"]
+        seasonal = sub.groupby(iso_week)[TARGET].median()
         ax.plot(seasonal.index, seasonal.values, marker="o", label=city,
-                color=CITY_COLORS[city])
-    ax.set_xticks(range(1, 13))
-    ax.set_xlabel("Month")
+                color=CITY_COLORS[city], ms=3)
+    ax.set_xticks(range(1, 54, 4))
+    ax.set_xlabel("ISO week of year")
     ax.set_ylabel("Median estimated cases")
-    ax.set_title("Seasonal pattern (median cases by month)")
+    ax.set_title("Seasonal pattern (median cases by ISO week)")
     ax.legend()
     _savefig("seasonality.png", fig, outputs_dir)
 
@@ -140,7 +141,7 @@ def plot_final_forecast(
 ) -> None:
     """
     historical_df should be quarterly-aggregated (e.g. via
-    quarterly_aggregation.aggregate_monthly_history_to_quarterly on top of
+    quarterly_aggregation.aggregate_weekly_history_to_quarterly on top of
     prepare_model_table(apply_reliability_cutoff=False)) so the most recent
     (still-converging) quarter — excluded from training — is included here
     and shows its genuinely wide casos_est_min/casos_est_max band. Older,
@@ -209,12 +210,12 @@ def plot_oof_predictions(
     continuous chronological series covering the full CV evaluation window.
     """
     sub = fold_predictions[fold_predictions["model"] == model_name].copy()
-    sub["month_start"] = pd.to_datetime(sub["month_start"])
+    sub["week_start"] = pd.to_datetime(sub["week_start"])
 
     fig, axes = plt.subplots(2, 2, figsize=(14, 8), sharex=False)
     axes = axes.flatten()
     for ax, city in zip(axes, CITIES):
-        city_df = sub[sub[CITY_COL] == city].sort_values("month_start")
+        city_df = sub[sub[CITY_COL] == city].sort_values("week_start")
 
         has_ci = (
             {"lower_95", "upper_95"}.issubset(city_df.columns)
@@ -231,11 +232,11 @@ def plot_oof_predictions(
 
         if has_ci:
             ax.fill_between(
-                city_df["month_start"], lower, city_df["upper_95"],
+                city_df["week_start"], lower, city_df["upper_95"],
                 alpha=0.2, color="red", label="OOF prediction 95% CI",
             )
-        ax.plot(city_df["month_start"], actual, "b-o", ms=4, label="Actual")
-        ax.plot(city_df["month_start"], predicted, "r--o", ms=4, label="OOF predicted")
+        ax.plot(city_df["week_start"], actual, "b-o", ms=4, label="Actual")
+        ax.plot(city_df["week_start"], predicted, "r--o", ms=4, label="OOF predicted")
         if log_scale:
             ax.set_yscale("log")
         ax.set_title(city)
@@ -253,8 +254,8 @@ def plot_proxy_comparison(comparison_table: pd.DataFrame, outputs_dir: Path | No
     (nivel_inc rule, sustained_rt rule, trained classifiers) -- replaces the
     role of the original ad-hoc notebook figure (01f_proxy_precision_recall_
     coverage.png), but built from real pipeline numbers on the fair
-    monthly-grain population (see results_tables.proxy_comparison_table)
-    instead of the notebook's weekly-onset-detection code.
+    weekly-grain population (see results_tables.proxy_comparison_table)
+    instead of the notebook's original weekly-onset-detection code.
     """
     metrics = ["precision", "recall", "f1", "coverage"]
     x = np.arange(len(comparison_table))
@@ -271,7 +272,7 @@ def plot_proxy_comparison(comparison_table: pd.DataFrame, outputs_dir: Path | No
     )
     ax.set_ylim(0, 1.05)
     ax.set_ylabel("Score")
-    ax.set_title("CI-regime proxy comparison: rules vs. trained classifier (fair, monthly grain)")
+    ax.set_title("CI-regime proxy comparison: rules vs. trained classifier (fair, weekly grain)")
     ax.legend(fontsize=8)
     fig.tight_layout()
     _savefig("proxy_comparison.png", fig, outputs_dir)

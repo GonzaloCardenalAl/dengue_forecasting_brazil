@@ -149,24 +149,24 @@ def compute_quarterly_residual_quantile_table(
 ) -> dict:
     """
     Quarterly counterpart of `compute_residual_quantile_table`, for the final
-    forecast deliverable (monthly model, predictions summed to quarters).
+    forecast deliverable (weekly model, predictions summed to quarters).
 
-    Naively summing monthly lower_95/upper_95 bounds to get a quarterly band
+    Naively summing weekly lower_95/upper_95 bounds to get a quarterly band
     is not statistically valid (overstates width if treated as fully
     correlated, wrong if treated as independent without proper convolution).
-    Instead: aggregate this model's monthly OOF actual/predicted values to
+    Instead: aggregate this model's weekly OOF actual/predicted values to
     (city, quarter, fold) sums, compute the quarterly residual
     log1p(actual_sum) - log1p(predicted_sum), and run the exact same
-    regime-conditional quantile calibration as the monthly table -- keyed off
-    the same growth_proxy, read from the first month of each quarter (the
+    regime-conditional quantile calibration as the weekly table -- keyed off
+    the same growth_proxy, read from the first week of each quarter (the
     proxy is "last known week's alert level before the period starts", so the
-    first month's value is the one that would actually be available at
+    first week's value is the one that would actually be available at
     quarterly-forecast time).
     """
     lower_q, upper_q = _quantile_bounds()
     sub = fold_predictions[fold_predictions["model"] == model_name].copy()
-    sub = sub.sort_values("month_start")
-    sub["_quarter"] = pd.PeriodIndex(sub["month_start"], freq="Q").to_timestamp()
+    sub = sub.sort_values("week_start")
+    sub["_quarter"] = pd.PeriodIndex(sub["week_start"], freq="Q").to_timestamp()
 
     grouped = sub.groupby([CITY_COL, "_quarter", "fold"]).agg(
         actual_sum=(TARGET, "sum"),

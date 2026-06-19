@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
-Load the trained final model, generate a 12-month-ahead forecast with 95% CI,
-then aggregate it to the quarterly deliverable (sum 3 months -> 1 quarter,
+Load the trained final model, generate a 52-week-ahead forecast with 95% CI,
+then aggregate it to the quarterly deliverable (sum ~13 weeks -> 1 quarter,
 with a separately-calibrated quarterly 95% CI -- see quarterly_aggregation.py
 and conditional_residuals.compute_quarterly_residual_quantile_table).
 """
@@ -10,9 +10,9 @@ import pandas as pd
 
 from dengue_ml.run_dir import get_latest_run_dir
 from dengue_ml.preprocessing import prepare_model_table
-from dengue_ml.forecasting.forecast_next_12m import generate_next_12m_forecast
+from dengue_ml.forecasting.forecast_next_52w import generate_next_52w_forecast
 from dengue_ml.forecasting.quarterly_aggregation import (
-    aggregate_monthly_forecast_to_quarterly, aggregate_monthly_history_to_quarterly,
+    aggregate_weekly_forecast_to_quarterly, aggregate_weekly_history_to_quarterly,
 )
 from dengue_ml.validation.conditional_residuals import compute_quarterly_residual_quantile_table, PROXY_COL
 from dengue_ml.reporting.results_tables import final_forecast_table
@@ -30,28 +30,28 @@ if __name__ == "__main__":
 
     artifact        = joblib.load(model_path)
     df              = prepare_model_table()
-    monthly_forecast_df = generate_next_12m_forecast(artifact, df)
+    weekly_forecast_df = generate_next_52w_forecast(artifact, df)
 
     quarterly_residual_quantiles = None
     fold_predictions_path = run_dir / "fold_predictions.csv"
     if fold_predictions_path.exists():
-        fold_predictions = pd.read_csv(fold_predictions_path, parse_dates=["month_start"])
+        fold_predictions = pd.read_csv(fold_predictions_path, parse_dates=["week_start"])
         model_oof = fold_predictions[fold_predictions["model"] == artifact["model_name"]]
         if not model_oof.empty and PROXY_COL in model_oof.columns and model_oof[PROXY_COL].notna().any():
             quarterly_residual_quantiles = compute_quarterly_residual_quantile_table(
                 fold_predictions, artifact["model_name"]
             )
 
-    quarterly_forecast_df = aggregate_monthly_forecast_to_quarterly(
-        monthly_forecast_df, quarterly_residual_quantiles
+    quarterly_forecast_df = aggregate_weekly_forecast_to_quarterly(
+        weekly_forecast_df, quarterly_residual_quantiles
     )
 
-    # Unfiltered history (includes the still-converging final month) so the
+    # Unfiltered history (includes the still-converging final week) so the
     # forecast plot can show its genuinely wide credible interval.
     full_history_df = prepare_model_table(apply_reliability_cutoff=False)
-    quarterly_history_df = aggregate_monthly_history_to_quarterly(full_history_df)
+    quarterly_history_df = aggregate_weekly_history_to_quarterly(full_history_df)
 
-    final_forecast_table(monthly_forecast_df, outputs_dir=run_dir)
+    final_forecast_table(weekly_forecast_df, outputs_dir=run_dir)
     final_forecast_table(
         quarterly_forecast_df, outputs_dir=run_dir,
         period_col="forecast_quarter", filename="final_quarterly_forecast.csv",
@@ -60,5 +60,5 @@ if __name__ == "__main__":
 
     print("\n=== Quarterly forecast (deliverable) ===")
     print(quarterly_forecast_df.to_string(index=False))
-    print(f"\nMonthly forecast saved to {run_dir / 'final_monthly_forecast.csv'}")
+    print(f"\nWeekly forecast saved to {run_dir / 'final_weekly_forecast.csv'}")
     print(f"Quarterly forecast saved to {run_dir / 'final_quarterly_forecast.csv'}")

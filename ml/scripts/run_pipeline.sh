@@ -39,27 +39,40 @@ if [ ${STATUS} -ne 0 ]; then
 fi
 echo "<<< STEP 1 done at $(date)"
 
-# ── Step 2: Train final model on all data ─────────────────────────────────────
+# ── Step 2: Epidemic classifier CV + proxy comparison (evaluation-only; not
+# wired into final_model/forecasts) -- needs Step 1's fold_predictions.csv in
+# the same run dir, which is why it runs right after it. Non-fatal: a failure
+# here shouldn't block the production forecast in Steps 3-4.
 echo ""
-echo ">>> STEP 2: Train final model"
+echo ">>> STEP 2: Epidemic classifier CV + proxy comparison"
+python "${SCRIPTS_DIR}/run_classifier_cv.py"
+STATUS=$?
+if [ ${STATUS} -ne 0 ]; then
+    echo "WARNING: run_classifier_cv.py failed with exit code ${STATUS} (continuing -- evaluation-only step)"
+fi
+echo "<<< STEP 2 done at $(date)"
+
+# ── Step 3: Train final model on all data ─────────────────────────────────────
+echo ""
+echo ">>> STEP 3: Train final model"
 python "${SCRIPTS_DIR}/train_final_model.py"
 STATUS=$?
 if [ ${STATUS} -ne 0 ]; then
     echo "ERROR: train_final_model.py failed with exit code ${STATUS}"
     exit ${STATUS}
 fi
-echo "<<< STEP 2 done at $(date)"
+echo "<<< STEP 3 done at $(date)"
 
-# ── Step 3: Generate 4-quarter forecasts ─────────────────────────────────────
+# ── Step 4: Generate forecasts ────────────────────────────────────────────────
 echo ""
-echo ">>> STEP 3: Generate forecasts"
+echo ">>> STEP 4: Generate forecasts"
 python "${SCRIPTS_DIR}/generate_forecasts.py"
 STATUS=$?
 if [ ${STATUS} -ne 0 ]; then
     echo "ERROR: generate_forecasts.py failed with exit code ${STATUS}"
     exit ${STATUS}
 fi
-echo "<<< STEP 3 done at $(date)"
+echo "<<< STEP 4 done at $(date)"
 
 echo ""
 echo "─────────────────────────────────────────────────────────"

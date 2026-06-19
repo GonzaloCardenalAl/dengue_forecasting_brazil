@@ -25,9 +25,9 @@ def run_training_pipeline(
 
     print("Loading and preprocessing data ...")
     df = prepare_model_table()
-    print(f"  Monthly table: {df.shape[0]} rows × {df.shape[1]} cols "
+    print(f"  Weekly table: {df.shape[0]} rows × {df.shape[1]} cols "
           f"| cities: {df['city_name'].nunique()} "
-          f"| months: {df['month_start'].nunique()}")
+          f"| weeks: {df['week_start'].nunique()}")
 
     print("\nRunning nested cross-validation ...")
     fold_metrics, fold_predictions, best_hparams = run_nested_cv(df)
@@ -52,7 +52,7 @@ def run_training_pipeline(
     print(improvement.to_string(index=False))
 
     best_model, best_mae = select_best_model(fold_metrics)
-    print(f"\nBest model (by median MAE): {best_model}")
+    print(f"\nBest model (by avg rank of median + std MAE): {best_model}")
     plot_oof_predictions(fold_predictions, best_model, outputs_dir=outputs_dir, log_scale=False)
     plot_oof_predictions(fold_predictions, best_model, outputs_dir=outputs_dir, log_scale=True)
     print(f"OOF predictions plots saved for '{best_model}' (log + linear)")

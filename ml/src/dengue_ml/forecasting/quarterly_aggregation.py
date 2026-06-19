@@ -5,28 +5,28 @@ from dengue_ml.config import CITY_COL
 from dengue_ml.validation.conditional_residuals import apply_residual_quantile_table
 
 
-def aggregate_monthly_forecast_to_quarterly(
-    monthly_forecast_df: pd.DataFrame,
+def aggregate_weekly_forecast_to_quarterly(
+    weekly_forecast_df: pd.DataFrame,
     quarterly_residual_quantiles: dict | None,
 ) -> pd.DataFrame:
     """
-    Roll a 12-month-ahead forecast (output of `generate_next_12m_forecast`) up
+    Roll a 52-week-ahead forecast (output of `generate_next_52w_forecast`) up
     to the quarterly deliverable.
 
-    Point forecast: sum of the 3 monthly point forecasts per (city, quarter)
+    Point forecast: sum of the ~13 weekly point forecasts per (city, quarter)
     -- valid since case counts are additive.
 
-    95% CI: NOT a sum of the monthly lower_95/upper_95 (statistically invalid
+    95% CI: NOT a sum of the weekly lower_95/upper_95 (statistically invalid
     -- see `compute_quarterly_residual_quantile_table`'s docstring). Instead,
     apply the quarterly-residual-quantile calibration table (computed once
     from nested-CV OOF data) to the summed point forecast, keyed off the
-    growth_proxy value at the first month of each quarter.
+    growth_proxy value at the first week of each quarter.
 
     Returns DataFrame: city, forecast_quarter, predicted_cases, lower_95,
     upper_95, model_name.
     """
-    df = monthly_forecast_df.copy().sort_values("forecast_month")
-    df["forecast_quarter"] = pd.PeriodIndex(df["forecast_month"], freq="Q").to_timestamp()
+    df = weekly_forecast_df.copy().sort_values("forecast_week")
+    df["forecast_quarter"] = pd.PeriodIndex(df["forecast_week"], freq="Q").to_timestamp()
 
     grouped = df.groupby(["city", "forecast_quarter"]).agg(
         predicted_cases=("predicted_cases", "sum"),
@@ -49,16 +49,14 @@ def aggregate_monthly_forecast_to_quarterly(
     return grouped[["city", "forecast_quarter", "predicted_cases", "lower_95", "upper_95", "model_name"]]
 
 
-def aggregate_monthly_history_to_quarterly(monthly_df: pd.DataFrame) -> pd.DataFrame:
+def aggregate_weekly_history_to_quarterly(weekly_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Roll up a monthly historical table (output of `prepare_model_table`) to
+    Roll up a weekly historical table (output of `prepare_model_table`) to
     quarterly sums of casos_est/casos_est_min/casos_est_max, for plotting the
-    quarterly deliverable's forecast against quarterly-aggregated history
-    (mirrors the sum-aggregation `aggregate_dengue_to_monthly` already does,
-    one level up).
+    quarterly deliverable's forecast against quarterly-aggregated history.
     """
-    df = monthly_df.copy()
-    df["quarter_start"] = pd.PeriodIndex(df["month_start"], freq="Q").to_timestamp()
+    df = weekly_df.copy()
+    df["quarter_start"] = pd.PeriodIndex(df["week_start"], freq="Q").to_timestamp()
 
     agg = (
         df.groupby([CITY_COL, "quarter_start"], sort=True)

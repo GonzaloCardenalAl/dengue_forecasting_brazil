@@ -1,57 +1,11 @@
-from functools import lru_cache
-
 import numpy as np
 import pandas as pd
 
-from dengue_ml.config import CITY_COL, DATE_COL
-from dengue_ml.preprocessing import get_weekly_table
-
-
-@lru_cache(maxsize=None)
-def _city_weekly_arrays(city: str, value_col: str) -> tuple[np.ndarray, np.ndarray]:
-    """Sorted (dates, values) for one city/column. Cached — weekly_df never changes."""
-    weekly_df = get_weekly_table()
-    city_weekly = weekly_df[weekly_df[CITY_COL] == city].sort_values(DATE_COL)
-    return city_weekly[DATE_COL].to_numpy(), city_weekly[value_col].to_numpy(dtype=float)
-
-
-@lru_cache(maxsize=None)
-def _week_window_features(
-    city: str,
-    month_start: pd.Timestamp,
-    value_col: str,
-    prefix: str,
-    n_weeks: int,
-    log_transform: bool,
-) -> dict:
-    """
-    The window for a given (city, month, column) is identical no matter which
-    monthly_df subset/fold calls into it, so memoizing here makes repeated
-    build_features() calls during nested CV / hyperparameter search nearly free.
-    """
-    dates, vals_all = _city_weekly_arrays(city, value_col)
-    qstart = np.datetime64(month_start)
-    vals = vals_all[dates < qstart][-n_weeks:]
-    if log_transform:
-        vals = np.log1p(vals)
-
-    window = np.full(n_weeks, np.nan)
-    if len(vals) > 0:
-        window[-len(vals):] = vals
-
-    record = {f"{prefix}_week_t-{i}": window[-i] for i in range(1, n_weeks + 1)}
-
-    last4, last8 = window[-4:], window[-8:]
-    growth_4w = np.diff(last4).mean() if not np.isnan(last4).any() else np.nan
-    growth_8w = np.diff(last8).mean() if not np.isnan(last8).any() else np.nan
-    record[f"{prefix}_weekly_growth_avg_4w"] = growth_4w
-    record[f"{prefix}_weekly_growth_avg_8w"] = growth_8w
-    record[f"{prefix}_weekly_growth_accel"]  = growth_4w - growth_8w
-    return record
+from dengue_ml.config import CITY_COL
 
 
 def add_weekly_lag_features(
-    monthly_df: pd.DataFrame,
+    df: pd.DataFrame,
     value_col: str,
     prefix: str,
     n_weeks: int,
@@ -59,19 +13,29 @@ def add_weekly_lag_features(
     group_col: str = CITY_COL,
 ) -> pd.DataFrame:
     """
-    For each city-month row, pull the last `n_weeks` raw weekly values strictly
-    before the month starts (t-1 = most recent week, t-n = oldest), plus
-    week-over-week growth/acceleration. Gives the model the actual shape of the
-    recent trajectory instead of a single monthly aggregate.
-
-    Multi-step-ahead forecasts (months beyond the next one) have no real future
-    weekly data, so they reuse the same last-known weekly window — an inherent
-    limitation of week-level features under a multi-month forecast horizon.
+    Attach the last `n_weeks` values of value_col strictly before each row
+    (t-1 = most recent, t-n_weeks = oldest), plus week-over-week
+    growth/acceleration, via direct groupby shifts on whatever df is passed
+    in. During the autoregressive forecast loop, df grows each iteration to
+    include the model's own just-predicted weeks, so these lags automatically
+    track the model's evolving trajectory instead of a frozen historical
+    snapshot -- this replaces an earlier cross-reference mechanism that read
+    a separate, static weekly table and could never see those predicted
+    weeks. Assumes df is already sorted by date within each group, same
+    convention as target_lag_features.py.
     """
-    df = monthly_df.reset_index(drop=True).copy()
-    records = [
-        _week_window_features(row[group_col], row["month_start"], value_col, prefix, n_weeks, log_transform)
-        for _, row in df.iterrows()
-    ]
-    feat_df = pd.DataFrame(records, index=df.index)
-    return df.join(feat_df)
+    df = df.copy()
+    s = np.log1p(df[value_col]) if log_transform else df[value_col]
+    g = s.groupby(df[group_col], sort=False)
+
+    for i in range(1, n_weeks + 1):
+        df[f"{prefix}_week_t-{i}"] = g.shift(i)
+
+    t1, t4, t8 = g.shift(1), g.shift(4), g.shift(8)
+    growth_4w = (t1 - t4) / 3
+    growth_8w = (t1 - t8) / 7
+    df[f"{prefix}_weekly_growth_avg_4w"] = growth_4w
+    df[f"{prefix}_weekly_growth_avg_8w"] = growth_8w
+    df[f"{prefix}_weekly_growth_accel"]  = growth_4w - growth_8w
+
+    return df

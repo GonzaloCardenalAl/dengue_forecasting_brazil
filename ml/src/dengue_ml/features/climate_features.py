@@ -14,7 +14,7 @@ def add_climate_features(
 
     Parameters
     ----------
-    df : DataFrame with columns tempmed, humidmed (monthly aggregated)
+    df : DataFrame with columns tempmed, humidmed (weekly resolution)
     group_col : city column for within-city operations
     fit_stats : pre-computed city-level means for anomaly calculation.
                 If None, compute from df (fit mode). Pass training-set stats
@@ -30,17 +30,17 @@ def add_climate_features(
     g_humid = df.groupby(group_col, sort=False)["humidmed"]
 
     # Lags (within city)
-    df["temp_lag_3m"]  = g_temp.shift(3).values
-    df["temp_lag_6m"]  = g_temp.shift(6).values
-    df["humid_lag_3m"] = g_humid.shift(3).values
-    df["humid_lag_6m"] = g_humid.shift(6).values
+    df["temp_lag_13w"]  = g_temp.shift(13).values
+    df["temp_lag_26w"]  = g_temp.shift(26).values
+    df["humid_lag_13w"] = g_humid.shift(13).values
+    df["humid_lag_26w"] = g_humid.shift(26).values
 
-    # Rolling means (6-month, based on lag-1 to avoid leakage)
-    df["temp_rolling_mean_6m"] = g_temp.shift(1).transform(
-        lambda x: x.rolling(6, min_periods=1).mean()
+    # Rolling means (26-week, based on lag-1 to avoid leakage)
+    df["temp_rolling_mean_26w"] = g_temp.shift(1).transform(
+        lambda x: x.rolling(26, min_periods=1).mean()
     ).values
-    df["humid_rolling_mean_6m"] = g_humid.shift(1).transform(
-        lambda x: x.rolling(6, min_periods=1).mean()
+    df["humid_rolling_mean_26w"] = g_humid.shift(1).transform(
+        lambda x: x.rolling(26, min_periods=1).mean()
     ).values
 
     # Anomaly = value − city long-run mean (fit on training data only)

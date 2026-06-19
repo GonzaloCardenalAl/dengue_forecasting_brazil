@@ -58,7 +58,7 @@ def tune_sarima(
     """
     Grid search over SARIMA parameters using inner rolling splits.
     Returns best (order, seasonal_order) by mean MAE across inner folds.
-    city_train_series must be indexed by month_start.
+    city_train_series must be indexed by week_start.
     """
     if param_grid is None:
         param_grid = load_training_config()["sarima"]["param_grid"]
@@ -76,15 +76,15 @@ def tune_sarima(
             try:
                 train_s = (
                     inner_train_df[inner_train_df[CITY_COL] == city]
-                    .set_index("month_start")[TARGET]
+                    .set_index("week_start")[TARGET]
                     .sort_index()
                 )
                 val_s = (
                     inner_val_df[inner_val_df[CITY_COL] == city]
-                    .set_index("month_start")[TARGET]
+                    .set_index("week_start")[TARGET]
                     .sort_index()
                 )
-                if len(train_s) < 24 or len(val_s) == 0:
+                if len(train_s) < 104 or len(val_s) == 0:
                     continue
                 import numpy as np
                 train_log = np.log1p(train_s)
