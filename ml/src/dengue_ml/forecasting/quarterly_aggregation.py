@@ -7,6 +7,23 @@ from dengue_ml.validation.conditional_residuals import (
 )
 
 
+def _expected_weeks_in_quarter(quarter_start: pd.Timestamp) -> int:
+    """Number of W-SUN week-starts that fall within the calendar quarter
+    beginning at quarter_start -- computed from the calendar, not from
+    whatever happens to be in a given forecast, so it's correct regardless
+    of which specific quarter/year is being checked (13 most of the time,
+    occasionally 12 or 14 depending on how Sundays line up that year)."""
+    next_quarter_start = quarter_start + pd.DateOffset(months=3)
+    return len(pd.date_range(quarter_start, next_quarter_start - pd.Timedelta(days=1), freq="W-SUN"))
+
+
+def _expected_weeks_in_month(month_start: pd.Timestamp) -> int:
+    """Same idea as `_expected_weeks_in_quarter`, for a calendar month (4 or
+    5 W-SUN week-starts depending on alignment)."""
+    next_month_start = month_start + pd.DateOffset(months=1)
+    return len(pd.date_range(month_start, next_month_start - pd.Timedelta(days=1), freq="W-SUN"))
+
+
 def aggregate_weekly_forecast_to_quarterly(
     weekly_forecast_df: pd.DataFrame,
     quarterly_residual_quantiles: dict | None,
@@ -19,6 +36,17 @@ def aggregate_weekly_forecast_to_quarterly(
     Point forecast: sum of the ~13 weekly point forecasts per (city, quarter)
     -- valid since case counts are additive.
 
+    Partial leading/trailing quarters are dropped: if the forecast horizon
+    doesn't start exactly on a quarter boundary (e.g. MAX_RELIABLE_WEEK now
+    rolls forward continuously rather than sitting at a fixed date -- see
+    config.compute_max_reliable_week), the first and/or last quarter bucket
+    can contain only a handful of forecasted weeks. Summing just those few
+    weeks and labeling it a full quarter's forecast would understate that
+    quarter (most of it is already-known actual data, not predicted) and
+    would also throw off `quarter_position` below, which assumes position 1
+    is genuinely the first FULL forecast quarter (that's what the
+    horizon-bucketed calibration table was built against).
+
     95% CI: NOT a sum of the weekly lower_95/upper_95 (statistically invalid
     -- see `compute_quarterly_residual_quantile_table`'s docstring). Instead,
     apply a calibration table to the summed point forecast, keyed off the
@@ -27,9 +55,9 @@ def aggregate_weekly_forecast_to_quarterly(
     - `horizon_bucketed_quantiles` (from
       `compute_horizon_bucketed_quarterly_residual_quantile_table`), if
       given, takes priority -- it's keyed by quarter_position (1st/2nd/3rd/
-      4th quarter *of this forecast*, derived here by ranking
-      `forecast_quarter` per city since the forecast always covers exactly
-      4 consecutive quarters ahead), giving a band that widens with horizon.
+      4th FULL quarter *of this forecast*, derived here by ranking
+      `forecast_quarter` per city after dropping partial quarters), giving a
+      band that widens with horizon.
     - Otherwise `quarterly_residual_quantiles` (the flat, non-horizon-aware
       table) is used, exactly as before.
 
@@ -43,7 +71,11 @@ def aggregate_weekly_forecast_to_quarterly(
         predicted_cases=("predicted_cases", "sum"),
         proxy_value=("proxy_value", "first"),
         model_name=("model_name", "first"),
+        n_weeks=("forecast_week", "size"),
     ).reset_index()
+
+    is_full_quarter = grouped["n_weeks"] == grouped["forecast_quarter"].map(_expected_weeks_in_quarter)
+    grouped = grouped[is_full_quarter].drop(columns="n_weeks").reset_index(drop=True)
 
     if horizon_bucketed_quantiles is not None and grouped["proxy_value"].notna().any():
         quarter_position = grouped.groupby("city")["forecast_quarter"].rank(method="first").astype(int)
@@ -80,6 +112,9 @@ def aggregate_weekly_forecast_to_monthly(
     (non-horizon-aware) fallback table here -- the monthly deliverable only
     exists once the autoregressive CV horizon-bucketed table is available.
 
+    Partial leading/trailing months are dropped, same reasoning as
+    `aggregate_weekly_forecast_to_quarterly`.
+
     Returns DataFrame: city, forecast_month, predicted_cases, lower_95,
     upper_95, proxy_value, model_name.
     """
@@ -90,7 +125,11 @@ def aggregate_weekly_forecast_to_monthly(
         predicted_cases=("predicted_cases", "sum"),
         proxy_value=("proxy_value", "first"),
         model_name=("model_name", "first"),
+        n_weeks=("forecast_week", "size"),
     ).reset_index()
+
+    is_full_month = grouped["n_weeks"] == grouped["forecast_month"].map(_expected_weeks_in_month)
+    grouped = grouped[is_full_month].drop(columns="n_weeks").reset_index(drop=True)
 
     if horizon_bucketed_quantiles is not None and grouped["proxy_value"].notna().any():
         month_position = grouped.groupby("city")["forecast_month"].rank(method="first").astype(int)

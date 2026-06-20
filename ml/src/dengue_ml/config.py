@@ -36,14 +36,24 @@ _RELIABILITY_LAG_WEEKS = 13
 
 
 def compute_max_reliable_week(now: pd.Timestamp | None = None) -> pd.Timestamp:
-    """Latest week-start considered safe for training/eval/inference: now
-    minus the ~13-week InfoDengue nowcast convergence lag, snapped back to
-    the most recent Sunday (this dataset's week-start convention -- every
-    data_iniSE value in the raw CSV is a Sunday)."""
+    """Latest week-start considered safe for training/eval/inference.
+
+    Snapped to the end of the last calendar QUARTER that is both fully
+    elapsed and old enough to have converged (>= ~13 weeks old) -- not just
+    "now minus 13 weeks" snapped to the nearest Sunday. Every deliverable
+    this cutoff feeds into is a quarterly forecast, so the forecast horizon
+    must start exactly on a quarter boundary; a cutoff that rolls forward
+    continuously week-by-week would land mid-quarter most of the time,
+    producing a "first forecast quarter" that's really a partial-quarter sum
+    of just a few predicted weeks tacked onto a quarter that's mostly
+    already-known actual data (see aggregate_weekly_forecast_to_quarterly).
+    """
     if now is None:
         now = pd.Timestamp.now()
-    cutoff = now - pd.Timedelta(weeks=_RELIABILITY_LAG_WEEKS)
-    return cutoff - pd.Timedelta(days=(cutoff.dayofweek + 1) % 7)
+    safe_now = now - pd.Timedelta(weeks=_RELIABILITY_LAG_WEEKS)
+    current_quarter_start = pd.Timestamp(pd.Period(safe_now, freq="Q").start_time)
+    last_full_quarter_end = current_quarter_start - pd.Timedelta(days=1)
+    return last_full_quarter_end - pd.Timedelta(days=(last_full_quarter_end.dayofweek + 1) % 7)
 
 # ── Forecasting / CV settings (sourced from configs/model_training.yaml) ──────
 FORECAST_HORIZON = _tcfg["cv"]["forecast_horizon"]  # weeks ahead
