@@ -8,20 +8,15 @@ from dengue_app import api_client, charts
 
 
 def render_home() -> None:
-    st.markdown('<div class="dora-title">', unsafe_allow_html=True)
-    st.title("Dengue Outbreak Response Assistant")
-    st.markdown("</div>", unsafe_allow_html=True)
-    st.markdown(
-        '<p class="dora-subtitle">AI-powered dengue forecasting and risk monitoring for Southeast Brazil</p>',
-        unsafe_allow_html=True,
-    )
+    with st.container(key="dora_filters"):
+        mode = st.radio("Mode", ["Current forecast", "Future forecast", "Historical"], horizontal=True)
+        cities_df = api_client.get_cities()
+        city_names = cities_df["city_name"].tolist()
+        selected_city = st.selectbox("City", city_names)
 
-    cities_df = api_client.get_cities()
-    city_names = cities_df["city_name"].tolist()
-    population_by_city = cities_df.set_index("city_name")["population"].to_dict()
-
-    mode = st.radio("Mode", ["Current forecast", "Future forecast", "Historical"], horizontal=True)
     is_forecast_mode = mode in ("Current forecast", "Future forecast")
+    population_by_city = cities_df.set_index("city_name")["population"].to_dict()
+    population = population_by_city.get(selected_city)
 
     # Always loaded (not just in forecast modes) -- the incidence bar chart
     # below needs the next-4-quarter forecast regardless of `mode`.
@@ -43,9 +38,6 @@ def render_home() -> None:
         if not forecast_quarter_options:
             st.warning("No forecast data available yet.")
             st.stop()
-
-    selected_city = st.selectbox("City", city_names)
-    population = population_by_city.get(selected_city)
 
     # ── Map (left) + status stats (right), same row ─────────────────────────
     map_col, stats_col = st.columns([2, 1])
@@ -106,6 +98,26 @@ def render_home() -> None:
     focus_cases = city_row["predicted_cases"] if is_forecast_mode else city_row["casos_est"]
     focus_incidence = focus_cases / population * 100_000 if population else None
 
+    city_history = api_client.get_history(city=selected_city)
+
+    # vs historical same-quarter average, vs same quarter last year -- shown
+    # as two more metric rows in stats_col, right below the existing three.
+    pct_vs_avg = None
+    pct_vs_last_year = None
+    if population and focus_incidence is not None and not city_history.empty and focus_quarter_ts is not None:
+        same_qoy = city_history[
+            (city_history["quarter_start"].dt.quarter == focus_quarter_ts.quarter)
+            & (city_history["quarter_start"] != focus_quarter_ts)
+        ]
+        avg_same_qoy_incidence = same_qoy["p_inc100k"].mean() if not same_qoy.empty else None
+        if avg_same_qoy_incidence:
+            pct_vs_avg = (focus_incidence - avg_same_qoy_incidence) / avg_same_qoy_incidence * 100
+
+        last_year_row = city_history[city_history["quarter_start"] == focus_quarter_ts - pd.DateOffset(years=1)]
+        last_year_incidence = last_year_row["p_inc100k"].iloc[0] if not last_year_row.empty else None
+        if last_year_incidence:
+            pct_vs_last_year = (focus_incidence - last_year_incidence) / last_year_incidence * 100
+
     with stats_col:
         st.markdown(f"#### {selected_city}")
         st.metric("Predicted cases", f"{city_row['predicted_cases']:,.0f}")
@@ -114,6 +126,17 @@ def render_home() -> None:
         else:
             st.metric("Actual cases", f"{city_row['casos_est']:,.0f}")
         st.metric("Epidemic probability", f"{city_row['epidemic_proba']:.0%}")
+        if focus_incidence is not None:
+            st.metric(
+                "Incidence vs. historical average for this quarter",
+                f"{focus_incidence:,.1f} /100k",
+                delta=f"{pct_vs_avg:+.0f}%" if pct_vs_avg is not None else None,
+            )
+            st.metric(
+                "Incidence vs. same quarter last year",
+                f"{focus_incidence:,.1f} /100k",
+                delta=f"{pct_vs_last_year:+.0f}%" if pct_vs_last_year is not None else None,
+            )
 
     # ── Trend chart: last 3 years + last year highlighted + forecast/backtest ──
     st.subheader(f"{selected_city} — quarterly trend")
@@ -131,8 +154,6 @@ def render_home() -> None:
         ].sort_values("quarter_start")
         x_categories = [charts.QUARTER_LABELS[d.month] for d in city_backtest_year["quarter_start"]]
         focus_df = city_backtest_year
-
-    city_history = api_client.get_history(city=selected_city)
 
     st.plotly_chart(
         charts.build_trend_chart(city_history, focus_df, x_categories,
@@ -163,39 +184,6 @@ def render_home() -> None:
         )
     else:
         st.info("Not enough data to build the incidence bar chart for this city yet.")
-
-    # ── Percentage stats: vs historical same-quarter average, vs last year ──
-    if population and focus_incidence is not None and not city_history.empty and focus_quarter_ts is not None:
-        same_qoy = city_history[
-            (city_history["quarter_start"].dt.quarter == focus_quarter_ts.quarter)
-            & (city_history["quarter_start"] != focus_quarter_ts)
-        ]
-        avg_same_qoy_incidence = same_qoy["p_inc100k"].mean() if not same_qoy.empty else None
-
-        last_year_row = city_history[city_history["quarter_start"] == focus_quarter_ts - pd.DateOffset(years=1)]
-        last_year_incidence = last_year_row["p_inc100k"].iloc[0] if not last_year_row.empty else None
-
-        pct_col1, pct_col2 = st.columns(2)
-        with pct_col1:
-            pct_vs_avg = (
-                (focus_incidence - avg_same_qoy_incidence) / avg_same_qoy_incidence * 100
-                if avg_same_qoy_incidence else None
-            )
-            st.metric(
-                "Incidence vs. historical average for this quarter",
-                f"{focus_incidence:,.1f} /100k",
-                delta=f"{pct_vs_avg:+.0f}%" if pct_vs_avg is not None else None,
-            )
-        with pct_col2:
-            pct_vs_last_year = (
-                (focus_incidence - last_year_incidence) / last_year_incidence * 100
-                if last_year_incidence else None
-            )
-            st.metric(
-                "Incidence vs. same quarter last year",
-                f"{focus_incidence:,.1f} /100k",
-                delta=f"{pct_vs_last_year:+.0f}%" if pct_vs_last_year is not None else None,
-            )
 
     # ── Seasonal profile (Q4->Q1->Q2->Q3), historical only ──────────────────
     st.subheader(f"{selected_city} — annual quarterly profile (historical seasons)")

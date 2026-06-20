@@ -209,3 +209,112 @@ if __name__ == "__main__":
 
         print(f"\nYear-over-year forecast deliverable (week/month/quarter + GIF frames) saved under "
               f"{run_dir / 'figures' / 'forecast'}/")
+
+        # Validation deliverable: same lead-in + reveal shape as the
+        # year-over-year forecast above, but for a year whose true outcome
+        # is already known -- validation_year is the most recent outer CV
+        # fold's test year, so the autoregressive rollout's own calibrated
+        # CI can be checked directly against reality as it widens with
+        # horizon. Falls back to skipping (no fold tests `prev_year` yet)
+        # rather than guessing a different year.
+        from dengue_ml.reporting.plots import plot_validation_rollout, plot_validation_rollout_frames
+
+        validation_year = prev_year
+        lead_in_year = validation_year - 1
+        validation_fold = fold_predictions_ar[
+            (fold_predictions_ar["model"] == model_name)
+            & (fold_predictions_ar["week_start"].dt.year == validation_year)
+        ].copy()
+
+        if validation_fold.empty:
+            print(f"\nSkipping {validation_year} validation deliverable -- no autoregressive "
+                  f"CV fold tests {validation_year} yet.")
+        else:
+            validation_root = run_dir / "figures" / f"{validation_year}_validation"
+
+            # ── Quarterly ──
+            q_pred = validation_fold.groupby([CITY_COL, "quarter_position"]).agg(
+                value=("predicted", "sum"),
+                growth_proxy=("growth_proxy", "first"),
+            ).reset_index().rename(columns={"quarter_position": "x_pos"})
+            q_lower, q_upper = apply_horizon_bucketed_quantile_table(
+                q_pred["value"].values, q_pred["growth_proxy"].values, q_pred["x_pos"].values,
+                horizon_quantiles,
+            )
+            q_pred["lower_95"], q_pred["upper_95"] = q_lower, q_upper
+
+            q_lead_in = quarterly_history_df[quarterly_history_df["quarter_start"].dt.year == lead_in_year].copy()
+            q_lead_in["x_pos"] = q_lead_in["quarter_start"].dt.quarter
+            q_lead_in = q_lead_in.rename(columns={"casos_est": "value"})
+
+            q_true = quarterly_history_df[quarterly_history_df["quarter_start"].dt.year == validation_year].copy()
+            q_true["x_pos"] = q_true["quarter_start"].dt.quarter
+            q_true = q_true.rename(columns={"casos_est": "value"})
+
+            quarterly_validation_dir = validation_root / "quarterly"
+            plot_validation_rollout(
+                quarter_labels, q_lead_in, q_true, q_pred, lead_in_year, validation_year,
+                outputs_dir=quarterly_validation_dir,
+            )
+            plot_validation_rollout_frames(
+                quarter_labels, q_lead_in, q_true, q_pred, lead_in_year, validation_year,
+                outputs_dir=quarterly_validation_dir,
+            )
+
+            # ── Monthly ──
+            m_pred = validation_fold.groupby([CITY_COL, "month_position"]).agg(
+                value=("predicted", "sum"),
+                growth_proxy=("growth_proxy", "first"),
+            ).reset_index().rename(columns={"month_position": "x_pos"})
+            m_lower, m_upper = apply_horizon_bucketed_quantile_table(
+                m_pred["value"].values, m_pred["growth_proxy"].values, m_pred["x_pos"].values,
+                monthly_horizon_quantiles,
+            )
+            m_pred["lower_95"], m_pred["upper_95"] = m_lower, m_upper
+
+            m_lead_in = monthly_history_df[monthly_history_df["month_start"].dt.year == lead_in_year].copy()
+            m_lead_in["x_pos"] = m_lead_in["month_start"].dt.month
+            m_lead_in = m_lead_in.rename(columns={"casos_est": "value"})
+
+            m_true = monthly_history_df[monthly_history_df["month_start"].dt.year == validation_year].copy()
+            m_true["x_pos"] = m_true["month_start"].dt.month
+            m_true = m_true.rename(columns={"casos_est": "value"})
+
+            monthly_validation_dir = validation_root / "monthly"
+            plot_validation_rollout(
+                month_labels, m_lead_in, m_true, m_pred, lead_in_year, validation_year,
+                outputs_dir=monthly_validation_dir,
+            )
+            plot_validation_rollout_frames(
+                month_labels, m_lead_in, m_true, m_pred, lead_in_year, validation_year,
+                outputs_dir=monthly_validation_dir,
+            )
+
+            # ── Weekly ──
+            w_pred = validation_fold.rename(columns={"predicted": "value", "week_position": "x_pos"}).copy()
+            w_lower, w_upper = apply_horizon_bucketed_quantile_table(
+                w_pred["value"].values, w_pred["growth_proxy"].values, w_pred["x_pos"].values,
+                weekly_horizon_quantiles,
+            )
+            w_pred["lower_95"], w_pred["upper_95"] = w_lower, w_upper
+
+            w_lead_in = full_history_df[full_history_df["week_start"].dt.year == lead_in_year].copy()
+            w_lead_in["x_pos"] = w_lead_in["week_start"].dt.isocalendar().week.astype(int)
+            w_lead_in = w_lead_in.rename(columns={"casos_est": "value"})
+
+            w_true = full_history_df[full_history_df["week_start"].dt.year == validation_year].copy()
+            w_true["x_pos"] = w_true["week_start"].dt.isocalendar().week.astype(int)
+            w_true = w_true.rename(columns={"casos_est": "value"})
+
+            weekly_validation_dir = validation_root / "weekly"
+            plot_validation_rollout(
+                week_labels, w_lead_in, w_true, w_pred, lead_in_year, validation_year,
+                outputs_dir=weekly_validation_dir,
+            )
+            plot_validation_rollout_frames(
+                week_labels, w_lead_in, w_true, w_pred, lead_in_year, validation_year,
+                outputs_dir=weekly_validation_dir,
+            )
+
+            print(f"\n{validation_year} validation deliverable (week/month/quarter + GIF frames, "
+                  f"lead-in {lead_in_year}) saved under {validation_root}/")

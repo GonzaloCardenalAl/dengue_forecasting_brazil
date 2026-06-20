@@ -327,12 +327,14 @@ def plot_forecast_year_over_year(
       `forecast_year` forecast, green solid with its own shaded
       (horizon-aware where available) 97.5% CI.
 
-    `reveal_n`, if given, drops `prev_oof`/`forecast` rows with x_pos > reveal_n
-    -- used by plot_forecast_year_over_year_frames to build a GIF that reveals
-    the forecast one point at a time; `prev_actual` is always shown in full
-    since it's the static backdrop. `ylim_by_city`, if given, fixes each
-    subplot's y-axis to a city's pre-computed (min, max) so frames don't
-    rescale as more points appear.
+    `reveal_n`, if given, drops `forecast` rows with x_pos > reveal_n -- used
+    by plot_forecast_year_over_year_frames to build a GIF that reveals the
+    forecast one point at a time. `prev_actual` and `prev_oof` are always
+    shown in full since they're both already-known data (real cases and the
+    model's own historical estimate for them) -- only the new forecast is
+    something being revealed. `ylim_by_city`, if given, fixes each subplot's
+    y-axis to a city's pre-computed (min, max) so frames don't rescale as
+    more points appear.
     """
     fig, axes = plt.subplots(2, 2, figsize=(14, 8))
     axes = axes.flatten()
@@ -341,7 +343,6 @@ def plot_forecast_year_over_year(
         po = prev_oof[prev_oof[CITY_COL] == city].sort_values("x_pos")
         fc = forecast[forecast[CITY_COL] == city].sort_values("x_pos")
         if reveal_n is not None:
-            po = po[po["x_pos"] <= reveal_n]
             fc = fc[fc["x_pos"] <= reveal_n]
 
         ax.plot(
@@ -410,10 +411,11 @@ def plot_forecast_year_over_year_frames(
 ) -> None:
     """
     One frame per forecast period (x_pos = 1..len(period_labels)), each
-    revealing one more point of `prev_oof`/`forecast` than the last (see
-    plot_forecast_year_over_year's `reveal_n`), then assembled into
-    forecast.gif via Pillow. Y-axis is fixed per city across every frame
-    (see `_city_ylim`) so the GIF doesn't rescale as points are added.
+    revealing one more point of `forecast` than the last (see
+    plot_forecast_year_over_year's `reveal_n`); `prev_actual`/`prev_oof` are
+    static across every frame. Frames are then assembled into forecast.gif
+    via Pillow. Y-axis is fixed per city across every frame (see
+    `_city_ylim`) so the GIF doesn't rescale as points are added.
     """
     from PIL import Image
 
@@ -426,6 +428,126 @@ def plot_forecast_year_over_year_frames(
         fname = f"frame_{i:02d}.png"
         plot_forecast_year_over_year(
             period_labels, prev_actual, prev_oof, forecast, prev_year, forecast_year,
+            outputs_dir=outputs_dir, filename=fname, reveal_n=i, ylim_by_city=ylim_by_city,
+        )
+        frame_paths.append(fig_dir / fname)
+
+    frames = [Image.open(p) for p in frame_paths]
+    frames[0].save(
+        fig_dir / "forecast.gif", save_all=True, append_images=frames[1:],
+        duration=frame_duration_ms, loop=0,
+    )
+
+
+def plot_validation_rollout(
+    period_labels: list[str],
+    lead_in_actual: pd.DataFrame,
+    true_values: pd.DataFrame,
+    predicted: pd.DataFrame,
+    lead_in_year: int,
+    validation_year: int,
+    outputs_dir: Path | str,
+    filename: str = "validation_rollout.png",
+    reveal_n: int | None = None,
+    ylim_by_city: dict | None = None,
+) -> None:
+    """
+    Validation twin of plot_forecast_year_over_year: instead of an unknown
+    future forecast, `validation_year` is a year whose true outcome is
+    already known (e.g. the most recent outer CV fold's test year), so the
+    same autoregressive rollout used in production can be checked directly
+    against reality as its horizon (and calibrated CI) widens.
+
+    - `lead_in_actual` (city_name, x_pos, value): real cases for
+      `lead_in_year`, blue dotted, no CI -- calm backdrop with no
+      compounding error since it isn't a multi-step rollout.
+    - `true_values` (city_name, x_pos, value): real cases for
+      `validation_year` itself, black solid, no CI -- always shown in full
+      (like `lead_in_actual`) since the point is to compare the rollout
+      against a known answer, not to hide it.
+    - `predicted` (city_name, x_pos, value, lower_95, upper_95): the
+      autoregressive rollout's own prediction for `validation_year` (see
+      validation/autoregressive_cv.run_autoregressive_cv), red dashed with
+      its horizon-bucketed CI -- the only series `reveal_n` truncates.
+
+    `reveal_n`/`ylim_by_city`: see plot_forecast_year_over_year.
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(14, 8))
+    axes = axes.flatten()
+    for ax, city in zip(axes, CITIES):
+        la = lead_in_actual[lead_in_actual[CITY_COL] == city].sort_values("x_pos")
+        tv = true_values[true_values[CITY_COL] == city].sort_values("x_pos")
+        pr = predicted[predicted[CITY_COL] == city].sort_values("x_pos")
+        if reveal_n is not None:
+            pr = pr[pr["x_pos"] <= reveal_n]
+
+        ax.plot(
+            la["x_pos"], _log_floor(la["value"]), color="blue", linestyle=":",
+            marker="o", ms=4, label=f"{lead_in_year} Actual",
+        )
+        ax.plot(
+            tv["x_pos"], _log_floor(tv["value"]), color="black", linestyle="-",
+            marker="o", ms=4, label=f"{validation_year} Actual (true)",
+        )
+
+        has_ci = {"lower_95", "upper_95"}.issubset(pr.columns) and pr["lower_95"].notna().any()
+        if has_ci:
+            ax.fill_between(
+                pr["x_pos"], _log_floor(pr["lower_95"]), _log_floor(pr["upper_95"]),
+                alpha=0.2, color="red",
+            )
+        ax.plot(
+            pr["x_pos"], _log_floor(pr["value"]), color="red", linestyle="--",
+            marker="o", ms=4, label=f"{validation_year} Predicted (autoregressive)",
+        )
+
+        ax.set_xticks(range(1, len(period_labels) + 1))
+        ax.set_xticklabels(period_labels)
+        ax.set_xlim(0.5, len(period_labels) + 0.5)
+        if ylim_by_city is not None and city in ylim_by_city:
+            ax.set_ylim(*ylim_by_city[city])
+        ax.set_yscale("log")
+        ax.set_title(city)
+        ax.set_ylabel("Estimated cases (log scale)")
+        ax.legend(fontsize=8)
+    fig.suptitle(
+        f"{validation_year} autoregressive rollout vs. true values (lead-in: {lead_in_year})",
+        fontsize=13,
+    )
+    fig.tight_layout()
+    _savefig_into(outputs_dir, filename, fig)
+
+
+def plot_validation_rollout_frames(
+    period_labels: list[str],
+    lead_in_actual: pd.DataFrame,
+    true_values: pd.DataFrame,
+    predicted: pd.DataFrame,
+    lead_in_year: int,
+    validation_year: int,
+    outputs_dir: Path | str,
+    frame_duration_ms: int = 600,
+) -> None:
+    """
+    GIF twin of plot_validation_rollout: one frame per validation period,
+    each revealing one more point of `predicted` than the last;
+    `lead_in_actual`/`true_values` are static across every frame. Same
+    fixed-per-city-y-axis + Pillow assembly as
+    plot_forecast_year_over_year_frames.
+    """
+    from PIL import Image
+
+    fig_dir = Path(outputs_dir)
+    fig_dir.mkdir(parents=True, exist_ok=True)
+    ylim_by_city = {
+        city: _city_ylim(lead_in_actual, true_values, predicted, city) for city in CITIES
+    }
+
+    frame_paths = []
+    for i in range(1, len(period_labels) + 1):
+        fname = f"frame_{i:02d}.png"
+        plot_validation_rollout(
+            period_labels, lead_in_actual, true_values, predicted, lead_in_year, validation_year,
             outputs_dir=outputs_dir, filename=fname, reveal_n=i, ylim_by_city=ylim_by_city,
         )
         frame_paths.append(fig_dir / fname)
