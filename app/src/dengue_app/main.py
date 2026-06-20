@@ -113,3 +113,26 @@ def history_seasonal_profile(city: str | None = Query(default=None)) -> list[dic
     nivel_inc==2 week."""
     _validate_city(city)
     return data.records(data.load_seasonal_profile(city))
+
+
+@app.get("/history/monthly")
+def history_monthly(city: str | None = Query(default=None)) -> list[dict]:
+    """Actual monthly case counts -- higher-resolution twin of
+    /history/quarterly, for the incidence bar chart."""
+    _validate_city(city)
+    df = data.load_history_monthly()
+    if city is not None:
+        df = df[df["city_name"] == city]
+    return data.records(df.sort_values(["city_name", "month_start"]))
+
+
+@app.get("/forecast/monthly")
+def forecast_monthly(city: str | None = Query(default=None)) -> list[dict]:
+    """Next ~12 months per city: predicted_cases (no CI -- see
+    load_monthly_forecast). Higher-resolution twin of /forecast/quarterly,
+    for the incidence bar chart."""
+    _validate_city(city)
+    df = data.load_monthly_forecast().rename(columns={"city": "city_name"})
+    if city is not None:
+        df = df[df["city_name"] == city]
+    return data.records(df.sort_values(["city_name", "forecast_month"]))

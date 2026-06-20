@@ -150,16 +150,17 @@ def aggregate_weekly_forecast_to_monthly(
 
 def aggregate_weekly_history_to_monthly(weekly_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Monthly twin of `aggregate_weekly_history_to_quarterly`, sums of casos_est
-    only (the redesigned year-over-year plot doesn't show the historical
-    casos_est_min/max reporting-uncertainty band, unlike plot_final_forecast).
+    Monthly twin of `aggregate_weekly_history_to_quarterly`, sums of
+    casos_est and p_inc100k (the redesigned year-over-year plot doesn't show
+    the historical casos_est_min/max reporting-uncertainty band, unlike
+    plot_final_forecast, so those aren't carried over here).
     """
     df = weekly_df.copy()
     df["month_start"] = df["week_start"].values.astype("datetime64[M]")
 
     agg = (
-        df.groupby([CITY_COL, "month_start"], sort=True)[TARGET]
-        .sum()
+        df.groupby([CITY_COL, "month_start"], sort=True)
+        .agg(casos_est=(TARGET, "sum"), p_inc100k=("p_inc100k", "sum"))
         .reset_index()
     )
     return agg.sort_values([CITY_COL, "month_start"]).reset_index(drop=True)

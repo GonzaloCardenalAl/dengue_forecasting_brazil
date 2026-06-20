@@ -50,5 +50,19 @@ def get_seasonal_profile(city: str) -> pd.DataFrame:
     return pd.DataFrame(api_get("/history/seasonal-profile", params={"city": city}))
 
 
+def get_history_monthly(city: str) -> pd.DataFrame:
+    df = pd.DataFrame(api_get("/history/monthly", params={"city": city}))
+    if not df.empty:
+        df["month_start"] = pd.to_datetime(df["month_start"])
+    return df
+
+
+def get_forecast_monthly(city: str) -> pd.DataFrame:
+    df = pd.DataFrame(api_get("/forecast/monthly", params={"city": city}))
+    if not df.empty:
+        df["forecast_month"] = pd.to_datetime(df["forecast_month"])
+    return df
+
+
 def get_recommendations() -> dict:
     return api_get("/risk/recommendations")

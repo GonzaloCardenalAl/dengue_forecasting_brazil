@@ -26,6 +26,10 @@ def quarter_label(date_str: str) -> str:
     return f"{d.year} {QUARTER_LABELS[d.month]}"
 
 
+def month_label(date_str: str) -> str:
+    return pd.Timestamp(date_str).strftime("%b %Y")
+
+
 def build_status_map(status_df: pd.DataFrame, selected_city: str | None = None) -> go.Figure:
     """City status markers over OpenStreetMap tiles, centered on all of
     Brazil by default (rather than fitbounds-to-points) so the map gives
@@ -127,19 +131,21 @@ def build_incidence_bar_chart(
     actual_labels: list[str], actual_incidence: list[float],
     forecast_labels: list[str], forecast_incidence: list[float],
 ) -> go.Figure:
-    """Previous 4 actual quarters vs next 4 forecasted quarters, on the
+    """Previous 12 actual months vs next 12 forecasted months, on the
     incidence-per-100k scale so it's comparable across cities of very
-    different population sizes."""
+    different population sizes -- monthly rather than quarterly bars for
+    finer resolution."""
     fig = go.Figure()
     fig.add_trace(go.Bar(x=actual_labels, y=actual_incidence, name="Actual", marker_color=ACTUAL_COLOR))
     fig.add_trace(go.Bar(x=forecast_labels, y=forecast_incidence, name="Forecast", marker_color=FORECAST_COLOR))
     fig.update_layout(
-        xaxis_title="Quarter", yaxis_title="Incidence per 100k",
+        xaxis_title="Month", yaxis_title="Incidence per 100k",
         height=380, bargap=0.25,
         legend=dict(orientation="h", yanchor="bottom", y=1.02),
         plot_bgcolor="white",
     )
-    fig.update_xaxes(categoryorder="array", categoryarray=actual_labels + forecast_labels, showgrid=False)
+    fig.update_xaxes(categoryorder="array", categoryarray=actual_labels + forecast_labels,
+                      showgrid=False, tickangle=-45)
     fig.update_yaxes(showgrid=True, gridcolor="#eee", zeroline=True, zerolinecolor="#ddd")
     return fig
 

@@ -18,6 +18,8 @@ from dengue_ml.data_refresh import refresh_dengue_data
 from dengue_ml.forecasting.pipeline import run_inference
 from dengue_ml.forecasting.quarterly_aggregation import (
     aggregate_weekly_classifier_to_quarterly,
+    aggregate_weekly_forecast_to_monthly,
+    aggregate_weekly_history_to_monthly,
     aggregate_weekly_history_to_quarterly,
     aggregate_weekly_oof_predictions_to_quarterly,
 )
@@ -64,6 +66,18 @@ def load_history_quarterly() -> pd.DataFrame:
     Cached per (run dir, raw CSV mtime) -- recomputed when a new pipeline run
     completes OR the raw CSV is refreshed in place (see refresh_and_reforecast)."""
     return _history_quarterly_cached(str(get_run_dir()), os.path.getmtime(DENGUE_FILE))
+
+
+@lru_cache(maxsize=1)
+def _history_monthly_cached(run_dir_key: str, raw_csv_mtime: float) -> pd.DataFrame:
+    return aggregate_weekly_history_to_monthly(_weekly_table_cached(run_dir_key, raw_csv_mtime))
+
+
+def load_history_monthly() -> pd.DataFrame:
+    """Actual monthly case counts (city_name, month_start, casos_est,
+    p_inc100k) -- higher-resolution twin of load_history_quarterly(), same
+    caching."""
+    return _history_monthly_cached(str(get_run_dir()), os.path.getmtime(DENGUE_FILE))
 
 
 @lru_cache(maxsize=1)
@@ -132,6 +146,22 @@ def load_quarterly_forecast() -> pd.DataFrame:
                    "has generate_forecasts.py completed for this run?",
         )
     return df
+
+
+def load_monthly_forecast() -> pd.DataFrame:
+    """Monthly twin of load_quarterly_forecast(), built on the fly from the
+    weekly forecast (no monthly forecast CSV is persisted by the pipeline).
+    No horizon-bucketed quantile table is passed in, so lower_95/upper_95
+    come back NaN -- fine here since the dashboard only uses this for point
+    incidence values, not a CI band."""
+    df = _read_csv("final_weekly_forecast.csv", parse_dates=["forecast_week"])
+    if df is None:
+        raise HTTPException(
+            status_code=503,
+            detail="final_weekly_forecast.csv not found in the latest run -- "
+                   "has generate_forecasts.py completed for this run?",
+        )
+    return aggregate_weekly_forecast_to_monthly(df, horizon_bucketed_quantiles=None)
 
 
 def load_classifier_model_name() -> str | None:

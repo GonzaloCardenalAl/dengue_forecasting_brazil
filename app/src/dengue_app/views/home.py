@@ -140,18 +140,19 @@ def render_home() -> None:
         width="stretch",
     )
 
-    # ── Incidence bar chart: previous 4 actual quarters vs next 4 forecasted ──
-    st.subheader(f"{selected_city} — incidence per 100k, last 4 quarters vs next 4 forecasted")
-    city_forecast_all = forecast_df[forecast_df["city_name"] == selected_city].sort_values("forecast_quarter")
-    if population and not city_forecast_all.empty and not city_history.empty:
-        earliest_forecast_quarter = city_forecast_all["forecast_quarter"].min()
-        prev_actual = city_history[city_history["quarter_start"] < earliest_forecast_quarter].sort_values(
-            "quarter_start"
-        ).tail(4)
-        next_forecast = city_forecast_all.head(4)
+    # ── Incidence bar chart: previous 12 actual months vs next 12 forecasted ──
+    st.subheader(f"{selected_city} — incidence per 100k, last 12 months vs next 12 forecasted")
+    city_history_monthly = api_client.get_history_monthly(selected_city)
+    city_forecast_monthly = api_client.get_forecast_monthly(selected_city)
+    if population and not city_forecast_monthly.empty and not city_history_monthly.empty:
+        earliest_forecast_month = city_forecast_monthly["forecast_month"].min()
+        prev_actual = city_history_monthly[city_history_monthly["month_start"] < earliest_forecast_month].sort_values(
+            "month_start"
+        ).tail(12)
+        next_forecast = city_forecast_monthly.sort_values("forecast_month").head(12)
 
-        actual_labels = [charts.quarter_label(d) for d in prev_actual["quarter_start"]]
-        forecast_labels = [charts.quarter_label(d) for d in next_forecast["forecast_quarter"]]
+        actual_labels = [charts.month_label(d) for d in prev_actual["month_start"]]
+        forecast_labels = [charts.month_label(d) for d in next_forecast["forecast_month"]]
         forecast_incidence = (next_forecast["predicted_cases"] / population * 100_000).tolist()
 
         st.plotly_chart(
