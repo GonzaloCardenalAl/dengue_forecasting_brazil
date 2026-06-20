@@ -52,6 +52,22 @@ class _ScaledXRFM:
         X_scaled = self.scaler.transform(X.to_numpy(dtype="float32"))
         return self.model.predict(X_scaled)
 
+    @property
+    def feature_importances_(self) -> np.ndarray:
+        """
+        RFM has no split-gain importance like XGBoost; the analogous quantity
+        is the diagonal of the learned AGOP (Mahalanobis) matrix M, which
+        measures how much the kernel stretches each (standardized) input
+        direction. Averaged across leaf RFMs (config has get_agop_best_model
+        always True -- see model_training.yaml) and normalized to sum to 1,
+        same convention as XGBoost's feature_importances_, so the existing
+        reporting code works unmodified.
+        """
+        agops = self.model.collect_best_agops()
+        diags = [agop if agop.ndim == 1 else torch.diagonal(agop) for agop in agops]
+        importances = torch.stack(diags).mean(dim=0).cpu().numpy()
+        return importances / importances.sum()
+
 
 def train_xrfm(
     X_train: pd.DataFrame,

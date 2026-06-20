@@ -166,6 +166,54 @@ def proxy_comparison_table(
     return table
 
 
+def coverage_by_gap_table(
+    fold_predictions: pd.DataFrame,
+    model_name: str,
+    outputs_dir: Path | None = None,
+) -> pd.DataFrame:
+    """
+    Per-city + overall monthly OOF CI coverage, with vs. without rows inside a
+    KNOWN_DATA_GAPS window (see validation/conditional_residuals.py) included
+    in the evaluation. Those rows are already excluded from *calibration*
+    everywhere -- this table is about *evaluation*: it shows how much a known
+    data-collection outage (e.g. Vitória's 2021 reporting gap) still drags
+    down the headline coverage number for the one city it actually happened
+    in, while leaving unaffected cities' numbers identical either way.
+    """
+    from dengue_ml.config import CITY_COL, TARGET
+    from dengue_ml.validation.conditional_residuals import (
+        aggregate_oof_to_monthly, assign_loFo_conditional_ci, is_known_data_gap,
+    )
+
+    outputs_dir = _resolve_outputs_dir(outputs_dir)
+    monthly = aggregate_oof_to_monthly(fold_predictions, model_name)
+    banded = assign_loFo_conditional_ci(monthly, model_name)
+    banded["in_band"] = (banded[TARGET] >= banded["lower_95"]) & (banded[TARGET] <= banded["upper_95"])
+    is_gap = is_known_data_gap(banded)
+
+    rows = []
+    for city in sorted(banded[CITY_COL].unique()):
+        sub = banded[banded[CITY_COL] == city]
+        sub_gap = is_gap[banded[CITY_COL] == city]
+        rows.append({
+            CITY_COL: city,
+            "coverage_including_gap": sub["in_band"].mean(),
+            "coverage_excluding_gap": sub.loc[~sub_gap, "in_band"].mean(),
+            "n_rows": len(sub),
+            "n_gap_rows": int(sub_gap.sum()),
+        })
+    rows.append({
+        CITY_COL: "Overall",
+        "coverage_including_gap": banded["in_band"].mean(),
+        "coverage_excluding_gap": banded.loc[~is_gap, "in_band"].mean(),
+        "n_rows": len(banded),
+        "n_gap_rows": int(is_gap.sum()),
+    })
+    table = pd.DataFrame(rows).round(4)
+    table.to_csv(outputs_dir / "coverage_by_gap.csv", index=False)
+    return table
+
+
 def feature_importance_table(
     model,
     feature_names: list[str],

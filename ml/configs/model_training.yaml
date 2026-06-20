@@ -49,10 +49,12 @@ xgboost:
     gamma:             [0.0, 0.1, 0.5, 1.0]
 
   # Target interval level for conditional-residual-quantile prediction
-  # intervals (see validation/conditional_residuals.py).
+  # intervals (see validation/conditional_residuals.py). 97.5% CI
+  # (was 95% / 0.025-0.975) -- global knob, affects every consumer of
+  # _quantile_bounds() (OOF plots, production forecast calibration tables).
   quantiles:
-    lower: 0.025
-    upper: 0.975
+    lower: 0.0125
+    upper: 0.9875
 
 xrfm:
   # rfm_params is nested {'model': {...}, 'fit': {...}} for the xRFM library;
@@ -82,21 +84,18 @@ xrfm:
     diag:       [true, false]
 
 sarima:
-  seasonal_period: 52  # m=52 (weekly seasonality)
-  # Seasonal grid trimmed for m=52's much higher per-fit cost vs m=12:
-  # Q fixed to 0 (seasonal MA is the most expensive, least-identifiable term
-  # at this lag, and most prone to Kalman-filter non-convergence); D fixed to
-  # 1 (seasonal differencing is almost always needed for a strongly,
-  # recurringly seasonal series like annual dengue outbreaks, so D=0 is the
-  # least likely branch to be selected anyway). p/d/q/P kept at their full
-  # range. 24 combos (was 96) -- if still too slow, drop p to [0, 1] next.
+  # Annual seasonality is represented via Fourier (sin/cos) exogenous
+  # regressors (fourier_order = number of harmonic pairs) rather than
+  # explicit seasonal AR/MA/differencing at lag 52 -- the lag-52 seasonal
+  # polynomial was too data-hungry/unstable to identify reliably (state-space
+  # dimension scales with the seasonal period) and made SARIMA underperform
+  # baseline after the monthly->weekly grain switch. The Fourier approach
+  # keeps a small non-seasonal ARIMA(p,d,q) and is ~45x faster per fit.
   param_grid:
     p: [0, 1, 2]
     d: [0, 1]
     q: [0, 1]
-    P: [0, 1]
-    D: [1]
-    Q: [0]
+    fourier_order: [1, 2, 3]
 
 # Binary "epidemic this month" classifier -- separate, parallel evaluation
 # track (see validation/nested_cv_classifier.py), not part of the point-

@@ -1,14 +1,17 @@
+import re
+import unicodedata
 import numpy as np
 import pandas as pd
 from typing import Optional
 
-from dengue_ml.config import TARGET, CITY_COL
+from dengue_ml.config import TARGET, CITY_COL, CITIES
 from dengue_ml.features.temporal_features import add_temporal_features
 from dengue_ml.features.target_lag_features import add_target_lag_features
 from dengue_ml.features.climate_features import add_climate_features
 from dengue_ml.features.sst_features import add_sst_features
 from dengue_ml.features.weekly_lag_features import add_weekly_lag_features
 from dengue_ml.features.monthly_lag_features import add_monthly_lag_features
+from dengue_ml.features.forecast_proxies import last_val, climatological_val
 
 # Lookback windows for week-level lag features (supplements the coarser raw
 # aggregate lags cases_lag_13w/26w/52w and temp/humid_lag_13w/26w in
@@ -40,6 +43,19 @@ _ALERT_VALUE_COLS = [
 
 # Feature columns for each set (populated at end of module)
 FEATURE_COLS: dict[str, list[str]] = {}
+
+
+def _slugify_city(name: str) -> str:
+    ascii_name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"[^a-z0-9]+", "_", ascii_name.lower()).strip("_")
+
+
+# One-hot city indicator, computed straight from CITY_COL (not a fitted
+# encoding) -- pooled models otherwise have no way to learn a per-city
+# baseline/offset, only what's implicit in lag-feature magnitudes. CITIES is
+# the full fixed list of 4 cities, so every split sees the same dummy
+# columns regardless of which cities happen to be present in it.
+_CITY_COLS = [f"city_is_{_slugify_city(c)}" for c in CITIES]
 
 _TEMPORAL_COLS = [
     "year", "week", "time_index", "week_sin", "week_cos",
@@ -78,7 +94,7 @@ _WEEKLY_ALERT_COLS = [
 ]
 
 FEATURE_COLS["cases_only"] = (
-    _TEMPORAL_COLS + _TARGET_LAG_COLS + _WEEKLY_CASES_COLS + _WEEKLY_ALERT_COLS
+    _CITY_COLS + _TEMPORAL_COLS + _TARGET_LAG_COLS + _WEEKLY_CASES_COLS + _WEEKLY_ALERT_COLS
 )
 FEATURE_COLS["cases_climate"] = (
     FEATURE_COLS["cases_only"] + _CLIMATE_COLS + _WEEKLY_CLIMATE_COLS
@@ -107,6 +123,10 @@ def _build_feature_matrix(
     """
     if feature_set not in FEATURE_COLS:
         raise ValueError(f"Unknown feature_set '{feature_set}'. Choose from {list(FEATURE_COLS)}")
+
+    df = df.copy()
+    for city, col in zip(CITIES, _CITY_COLS):
+        df[col] = (df[CITY_COL] == city).astype(int)
 
     df = add_temporal_features(df)
     df = add_target_lag_features(df)
@@ -205,6 +225,59 @@ def build_classification_features(
     return X, y.reset_index(drop=True), meta, returned_climate_stats
 
 
+# Raw, unlagged exogenous columns that appear directly in FEATURE_COLS
+# (_CLIMATE_COLS / _SST_COLS above) for the row's *own* week/month -- the one
+# place a 1-step CV split can hand the model an oracle's view of the future
+# that the real forecast loop (forecasting/autoregressive.py) never has. Any
+# *lagged* derivative of these (temp_lag_13w, nino34_month_t-1, ...) already
+# only reads values strictly before the row's own week/month, so those are
+# unaffected and untouched here.
+_EVAL_CLIMATOLOGICAL_COLS = ["tempmed", "humidmed"]
+_EVAL_CARRY_FORWARD_COLS = ["nino34_anom"]
+
+
+def _make_eval_window_deployment_realistic(
+    train_df: pd.DataFrame, eval_df: pd.DataFrame
+) -> pd.DataFrame:
+    """
+    Overwrite eval_df's contemporaneous climate/SST columns with the same
+    stand-ins the real forecast loop uses for a not-yet-observed week
+    (forecasting/autoregressive.py's `_climatological_val`/`_last_val`),
+    computed from train_df history only.
+
+    Without this, a 1-step nested-CV/hyperparameter-search split evaluates
+    the model as if it already knew the real temperature/humidity/SST for
+    the week it's forecasting -- real for *training* (the past is known),
+    but never true at actual forecast time, where every horizon week's
+    climate/SST is unknown and approximated the same way. Left unfixed, this
+    silently inflates climate-feature models' apparent CV performance, and
+    narrows the OOF-residual-based CI bands below true deployment error.
+
+    Only mutates raw columns; `is_el_nino`/`is_la_nina`/`is_neutral` and any
+    lag/rolling/anomaly feature are recomputed downstream from these values,
+    so substituting here is sufficient. `cases_only` features never read
+    these columns, so this is a no-op for that feature set.
+    """
+    eval_df = eval_df.copy()
+
+    for city in eval_df[CITY_COL].unique():
+        city_mask = eval_df[CITY_COL] == city
+        for col in _EVAL_CLIMATOLOGICAL_COLS:
+            if col not in eval_df.columns:
+                continue
+            eval_df.loc[city_mask, col] = [
+                climatological_val(train_df, city, col, w)
+                for w in eval_df.loc[city_mask, "week_start"]
+            ]
+
+    for col in _EVAL_CARRY_FORWARD_COLS:
+        if col not in eval_df.columns:
+            continue
+        eval_df[col] = last_val(train_df, None, col)
+
+    return eval_df
+
+
 def build_features_for_split(
     train_df: pd.DataFrame,
     eval_df: pd.DataFrame,
@@ -216,8 +289,15 @@ def build_features_for_split(
     history (train_df + eval_df) so lags remain valid, then masked back down
     to only eval_df's weeks. climate_fit_stats are always fit on train_df
     only (no leakage from eval_df's climate distribution).
+
+    eval_df's contemporaneous tempmed/humidmed/nino34_anom are first replaced
+    with deployment-realistic estimates (see
+    `_make_eval_window_deployment_realistic`) so the evaluation doesn't see
+    real future climate/SST it would never have at actual forecast time.
     """
     X_tr, y_tr, _, climate_stats = build_features(train_df, feature_set)
+
+    eval_df = _make_eval_window_deployment_realistic(train_df, eval_df)
 
     combined = pd.concat([train_df, eval_df], ignore_index=True).sort_values(
         [CITY_COL, "week_start"]
@@ -243,10 +323,13 @@ def build_classification_features_for_split(
     """
     Classification counterpart of `build_features_for_split` -- identical
     train/eval feature construction (combined-history lags, train-only climate
-    stats), but `y` is the binary is_epidemic label from
-    `build_classification_features` instead of log1p(casos_est).
+    stats, deployment-realistic eval-window climate/SST substitution), but
+    `y` is the binary is_epidemic label from `build_classification_features`
+    instead of log1p(casos_est).
     """
     X_tr, y_tr, _, climate_stats = build_classification_features(train_df, feature_set)
+
+    eval_df = _make_eval_window_deployment_realistic(train_df, eval_df)
 
     combined = pd.concat([train_df, eval_df], ignore_index=True).sort_values(
         [CITY_COL, "week_start"]

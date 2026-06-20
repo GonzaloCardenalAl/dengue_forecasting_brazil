@@ -11,12 +11,14 @@ from dengue_ml.features.feature_pipeline import (
 )
 from dengue_ml.models.xgboost_models import train_xgb
 from dengue_ml.models.xrfm_models import train_xrfm
-from dengue_ml.models.sarima import fit_sarima, tune_sarima
+from dengue_ml.models.sarima import fit_sarima, tune_sarima, fourier_terms
 from dengue_ml.models.classifier_models import (
     train_logreg, predict_proba_logreg, train_xgb_clf, predict_proba_xgb_clf,
 )
 from dengue_ml.validation.time_splits import make_inner_splits
-from dengue_ml.validation.conditional_residuals import compute_residual_quantile_table, PROXY_COL
+from dengue_ml.validation.conditional_residuals import (
+    compute_residual_quantile_table, compute_horizon_bucketed_quarterly_residual_quantile_table, PROXY_COL,
+)
 
 
 def train_final_model(
@@ -25,6 +27,7 @@ def train_final_model(
     outputs_dir: Path | None = None,
     df: pd.DataFrame | None = None,
     fold_predictions: pd.DataFrame | None = None,
+    fold_predictions_ar: pd.DataFrame | None = None,
 ) -> dict:
     """
     Train the final selected model on all available historical data.
@@ -53,9 +56,11 @@ def train_final_model(
         city_models  = {}
         for city in CITIES:
             city_train = df[df[CITY_COL] == city].copy()
-            order, sorder = tune_sarima(city_train, inner_splits, city=city)
+            order, k = tune_sarima(city_train, inner_splits, city=city)
             train_s  = city_train.set_index("week_start")[TARGET].sort_index()
-            city_models[city] = fit_sarima(np.log1p(train_s), order, sorder)
+            train_exog = fourier_terms(train_s.index, k)
+            fit_result = fit_sarima(np.log1p(train_s), order, exog=train_exog)
+            city_models[city] = {"fit": fit_result, "fourier_order": k}
         artifact["models"] = city_models
         joblib.dump(artifact, outputs_dir / "final_model.pkl")
         return artifact
@@ -90,9 +95,23 @@ def train_final_model(
         if not model_oof.empty and PROXY_COL in model_oof.columns and model_oof[PROXY_COL].notna().any():
             residual_quantiles = compute_residual_quantile_table(fold_predictions, selected_model_name)
 
+    # Horizon-aware counterpart of residual_quantiles, from the autoregressive
+    # CV backtest (validation/autoregressive_cv.py) -- None for model families
+    # that mechanism doesn't cover (baseline/sarima) or when that second
+    # validation hasn't been run yet (older run dirs); see
+    # forecasting/quarterly_aggregation.py for where it's consumed.
+    horizon_quantiles = None
+    if fold_predictions_ar is not None:
+        model_oof_ar = fold_predictions_ar[fold_predictions_ar["model"] == selected_model_name]
+        if not model_oof_ar.empty and PROXY_COL in model_oof_ar.columns and model_oof_ar[PROXY_COL].notna().any():
+            horizon_quantiles = compute_horizon_bucketed_quarterly_residual_quantile_table(
+                fold_predictions_ar, selected_model_name
+            )
+
     artifact.update({
         "model":              model,
         "residual_quantiles": residual_quantiles,
+        "horizon_quantiles":  horizon_quantiles,
         "feature_set":        feature_set,
         "feature_cols":       feature_cols,
         "climate_stats":      climate_stats,

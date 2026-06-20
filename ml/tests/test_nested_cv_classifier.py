@@ -41,8 +41,9 @@ def test_run_one_classifier_attaches_rule_columns_from_features(monkeypatch):
         nested_cv_classifier, "build_classification_features_for_split", _fake_split,
     )
 
-    preds_df = _run_one_classifier("logreg", pd.DataFrame(), pd.DataFrame(), [], "cases_only")
+    preds_df, best_params = _run_one_classifier("logreg", pd.DataFrame(), pd.DataFrame(), [], "cases_only")
 
+    assert isinstance(best_params, dict)
     assert list(preds_df["nivel_inc_rule"])    == [0, 0, 1, 1]   # >= NIVEL_INC_RULE_THRESHOLD (2)
     assert list(preds_df["sustained_rt_rule"]) == [0, 0, 1, 0]   # >= 0.5
     assert list(preds_df["is_epidemic"])       == [0, 0, 1, 1]

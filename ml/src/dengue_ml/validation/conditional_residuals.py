@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from dengue_ml.config import TARGET, CITY_COL
+from dengue_ml.config import TARGET, CITY_COL, FORECAST_HORIZON
 from dengue_ml.training_config import load_training_config
 
 # growth_proxy = the trained epidemic classifier's predicted probability of
@@ -30,8 +30,45 @@ REGIME_THRESHOLD = 0.5
 # Label this proxy is stored under in fold_predictions/preds_df.
 PROXY_COL = "growth_proxy"
 
+# Known data-collection outages to exclude from residual-quantile
+# CALIBRATION only -- the rows stay in fold_predictions/plots as real
+# history, they just aren't valid evidence of "how wrong the model normally
+# is," since the gap is a reporting failure, not a forecasting error.
+#
+# Vitória's InfoDengue feed reported a flat 0 (casos_est == casos_est_min ==
+# casos_est_max == raw casos, every single week) for 49 straight weeks --
+# confirmed against ml/data/raw/infodengue_capitals_subsetBR.csv. No real
+# city goes a full year with zero dengue cases across every column while the
+# model (trained on climate + lag features) predicted 50-115/week throughout;
+# this is a surveillance outage (plausibly COVID-era), not a quiet season.
+# Left uncalibrated-against, this single anomaly was setting the low-regime,
+# low-magnitude quantile tail for *every* city, not just Vitória.
+KNOWN_DATA_GAPS = [
+    {CITY_COL: "Vitória", "start": "2021-01-03", "end": "2021-12-05"},
+]
 
-def _quantile_bounds() -> tuple[float, float]:
+
+def is_known_data_gap(df: pd.DataFrame) -> pd.Series:
+    """Boolean mask, True for rows inside a KNOWN_DATA_GAPS window. Auto-
+    detects whichever per-row date column the caller's frame carries
+    (weekly fold_predictions has week_start; aggregate_oof_to_monthly's
+    output has month_start); frames with neither (e.g. synthetic test
+    fixtures) have nothing to mask, so just return all-False."""
+    date_col = next((c for c in ("week_start", "month_start") if c in df.columns), None)
+    if date_col is None:
+        return pd.Series(False, index=df.index)
+    dates = pd.to_datetime(df[date_col])
+    mask = pd.Series(False, index=df.index)
+    for gap in KNOWN_DATA_GAPS:
+        mask |= (
+            (df[CITY_COL] == gap[CITY_COL])
+            & (dates >= pd.Timestamp(gap["start"]))
+            & (dates <= pd.Timestamp(gap["end"]))
+        )
+    return mask
+
+
+def quantile_bounds() -> tuple[float, float]:
     q = load_training_config()["xgboost"]["quantiles"]
     return q["lower"], q["upper"]
 
@@ -56,8 +93,13 @@ def assign_loFo_conditional_ci(
         evaluate alternate regime proxies (e.g. sustained_rt, or a trained
         classifier's thresholded probability) without touching the default
         path. None (default) reproduces today's production behavior exactly.
+
+    Rows inside a KNOWN_DATA_GAPS window are dropped from every fold's
+    calibration pool (they're known-bad signal, not model error) but still
+    receive their own lower_95/upper_95 like any other held-out row, so
+    plots built on the result don't show a hole.
     """
-    lower_q, upper_q = _quantile_bounds()
+    lower_q, upper_q = quantile_bounds()
     sub = fold_predictions[fold_predictions["model"] == model_name].copy()
     log_resid = np.log1p(sub[TARGET]) - np.log1p(sub["predicted"])
     sub["_log_resid"] = log_resid
@@ -70,8 +112,10 @@ def assign_loFo_conditional_ci(
     q_lower = pd.Series(np.nan, index=sub.index)
     q_upper = pd.Series(np.nan, index=sub.index)
 
+    is_gap = is_known_data_gap(sub)
+
     for fold in sub["fold"].unique():
-        calib = sub[sub["fold"] != fold]
+        calib = sub[(sub["fold"] != fold) & ~is_gap]
 
         for is_high in (True, False):
             calib_mask = calib["_is_high"] == is_high
@@ -96,6 +140,61 @@ def assign_loFo_conditional_ci(
     fold_predictions.loc[sub.index, "lower_95"] = lower
     fold_predictions.loc[sub.index, "upper_95"] = upper
     return fold_predictions
+
+
+def aggregate_oof_to_monthly(
+    fold_predictions: pd.DataFrame,
+    model_name: str,
+) -> pd.DataFrame:
+    """
+    Monthly-aggregated counterpart of one model's weekly OOF fold_predictions,
+    for a validation plot that doesn't inherit the weekly band's heavy
+    near-zero-count noise (see compute_quarterly_residual_quantile_table's
+    docstring for the same rationale at quarterly grain).
+
+    Sums TARGET/predicted to (city, month, fold) and keeps the first week's
+    growth_proxy ("value available as of the start of the period"), then
+    re-tags the result as a single-model frame shaped exactly like
+    fold_predictions so assign_loFo_conditional_ci can be reused unmodified to
+    compute monthly-grain LOFO conditional CI bands on it.
+    """
+    sub = fold_predictions[fold_predictions["model"] == model_name].copy()
+    sub["week_start"] = pd.to_datetime(sub["week_start"])
+    sub["_month"] = sub["week_start"].values.astype("datetime64[M]")
+
+    grouped = sub.groupby([CITY_COL, "_month", "fold"]).agg(
+        **{TARGET: (TARGET, "sum")},
+        predicted=("predicted", "sum"),
+        **{PROXY_COL: (PROXY_COL, "first")},
+    ).reset_index()
+    grouped = grouped.rename(columns={"_month": "month_start"})
+    grouped["model"] = model_name
+    return grouped
+
+
+def aggregate_oof_to_quarterly(
+    fold_predictions: pd.DataFrame,
+    model_name: str,
+) -> pd.DataFrame:
+    """
+    Quarterly twin of `aggregate_oof_to_monthly` -- same shape (keeps `fold`
+    so `assign_loFo_conditional_ci` can be reused unmodified), just grouped
+    by calendar quarter instead of month. Used to build the "{prev_year}
+    Estimated Cases" line's own LOFO conditional CI for the redesigned
+    year-over-year plot.
+    """
+    sub = fold_predictions[fold_predictions["model"] == model_name].copy()
+    sub["week_start"] = pd.to_datetime(sub["week_start"])
+    sub["_quarter"] = pd.PeriodIndex(sub["week_start"], freq="Q").to_timestamp()
+
+    grouped = sub.groupby([CITY_COL, "_quarter", "fold"]).agg(
+        **{TARGET: (TARGET, "sum")},
+        predicted=("predicted", "sum"),
+        **{PROXY_COL: (PROXY_COL, "first")},
+    ).reset_index()
+    grouped = grouped.rename(columns={"_quarter": "quarter_start"})
+    grouped["model"] = model_name
+    return grouped
 
 
 def compute_regime_coverage(
@@ -130,10 +229,12 @@ def compute_residual_quantile_table(
     Calibration table for the production forecast: the fixed REGIME_THRESHOLD
     plus one pair of residual quantiles per side, computed from all OOF
     residuals for this model across the full nested CV run (none of which the
-    model trained on its own label for).
+    model trained on its own label for). Rows inside a KNOWN_DATA_GAPS window
+    are dropped first -- see that constant's docstring.
     """
-    lower_q, upper_q = _quantile_bounds()
+    lower_q, upper_q = quantile_bounds()
     sub = fold_predictions[fold_predictions["model"] == model_name]
+    sub = sub[~is_known_data_gap(sub)]
     log_resid = np.log1p(sub[TARGET]) - np.log1p(sub["predicted"])
 
     low_resid  = log_resid[sub[PROXY_COL] <  REGIME_THRESHOLD]
@@ -166,9 +267,13 @@ def compute_quarterly_residual_quantile_table(
     proxy is "classifier's predicted epidemic probability as of the most
     recently known week before the period starts", so the first week's value
     is the one that would actually be available at quarterly-forecast time).
+
+    Rows inside a KNOWN_DATA_GAPS window are dropped before aggregating to
+    quarters -- see that constant's docstring.
     """
-    lower_q, upper_q = _quantile_bounds()
+    lower_q, upper_q = quantile_bounds()
     sub = fold_predictions[fold_predictions["model"] == model_name].copy()
+    sub = sub[~is_known_data_gap(sub)]
     sub = sub.sort_values("week_start")
     sub["_quarter"] = pd.PeriodIndex(sub["week_start"], freq="Q").to_timestamp()
 
@@ -189,6 +294,165 @@ def compute_quarterly_residual_quantile_table(
         "low":  {"q_lower": float(low_resid.quantile(lower_q)),  "q_upper": float(low_resid.quantile(upper_q))},
         "high": {"q_lower": float(high_resid.quantile(lower_q)), "q_upper": float(high_resid.quantile(upper_q))},
     }
+
+
+def compute_horizon_bucketed_quarterly_residual_quantile_table(
+    fold_predictions_ar: pd.DataFrame,
+    model_name: str,
+) -> dict:
+    """
+    Horizon-aware counterpart of `compute_quarterly_residual_quantile_table`,
+    built from `validation/autoregressive_cv.run_autoregressive_cv`'s OOF
+    residuals (a real autoregressive multi-step rollout within each outer CV
+    fold's test window) instead of 1-step-ahead residuals built from real
+    historical lags. Bucketed by `quarter_position` (1st/2nd/3rd/4th quarter
+    of the forecast horizon) rather than calendar quarter, so later
+    quarters' wider compounding error shows up as a wider calibrated band --
+    the flat 1-step table can't capture this since every quarter's residuals
+    there come from predictions made with perfect historical lags.
+
+    Returns {1: {...}, 2: {...}, 3: {...}, 4: {...}}, each shaped like
+    `compute_quarterly_residual_quantile_table`'s single-table return.
+
+    Rows inside a KNOWN_DATA_GAPS window are dropped first -- see that
+    constant's docstring.
+    """
+    lower_q, upper_q = quantile_bounds()
+    sub = fold_predictions_ar[fold_predictions_ar["model"] == model_name].copy()
+    sub = sub[~is_known_data_gap(sub)]
+
+    grouped = sub.groupby([CITY_COL, "fold", "quarter_position"]).agg(
+        actual_sum=(TARGET, "sum"),
+        predicted_sum=("predicted", "sum"),
+        **{PROXY_COL: (PROXY_COL, "first")},
+    ).reset_index()
+
+    log_resid = np.log1p(grouped["actual_sum"]) - np.log1p(grouped["predicted_sum"])
+
+    table = {}
+    for qpos in (1, 2, 3, 4):
+        bucket_mask  = grouped["quarter_position"] == qpos
+        bucket_resid = log_resid[bucket_mask]
+        bucket_proxy = grouped.loc[bucket_mask, PROXY_COL]
+
+        low_resid  = bucket_resid[bucket_proxy <  REGIME_THRESHOLD]
+        high_resid = bucket_resid[bucket_proxy >= REGIME_THRESHOLD]
+
+        table[qpos] = {
+            "proxy_col": PROXY_SOURCE_FEATURE,
+            "threshold": REGIME_THRESHOLD,
+            "low":  {"q_lower": float(low_resid.quantile(lower_q)),  "q_upper": float(low_resid.quantile(upper_q))},
+            "high": {"q_lower": float(high_resid.quantile(lower_q)), "q_upper": float(high_resid.quantile(upper_q))},
+        }
+    return table
+
+
+def compute_horizon_bucketed_monthly_residual_quantile_table(
+    fold_predictions_ar: pd.DataFrame,
+    model_name: str,
+) -> dict:
+    """
+    Monthly twin of `compute_horizon_bucketed_quarterly_residual_quantile_table`
+    -- same autoregressive-rollout residuals, bucketed by `month_position`
+    (1st..12th month of the forecast horizon) instead of `quarter_position`.
+    Returns {1: {...}, ..., 12: {...}}.
+    """
+    lower_q, upper_q = quantile_bounds()
+    sub = fold_predictions_ar[fold_predictions_ar["model"] == model_name].copy()
+    sub = sub[~is_known_data_gap(sub)]
+
+    grouped = sub.groupby([CITY_COL, "fold", "month_position"]).agg(
+        actual_sum=(TARGET, "sum"),
+        predicted_sum=("predicted", "sum"),
+        **{PROXY_COL: (PROXY_COL, "first")},
+    ).reset_index()
+
+    log_resid = np.log1p(grouped["actual_sum"]) - np.log1p(grouped["predicted_sum"])
+
+    table = {}
+    for mpos in range(1, 13):
+        bucket_mask  = grouped["month_position"] == mpos
+        bucket_resid = log_resid[bucket_mask]
+        bucket_proxy = grouped.loc[bucket_mask, PROXY_COL]
+
+        low_resid  = bucket_resid[bucket_proxy <  REGIME_THRESHOLD]
+        high_resid = bucket_resid[bucket_proxy >= REGIME_THRESHOLD]
+
+        table[mpos] = {
+            "proxy_col": PROXY_SOURCE_FEATURE,
+            "threshold": REGIME_THRESHOLD,
+            "low":  {"q_lower": float(low_resid.quantile(lower_q)),  "q_upper": float(low_resid.quantile(upper_q))},
+            "high": {"q_lower": float(high_resid.quantile(lower_q)), "q_upper": float(high_resid.quantile(upper_q))},
+        }
+    return table
+
+
+def compute_horizon_bucketed_weekly_residual_quantile_table(
+    fold_predictions_ar: pd.DataFrame,
+    model_name: str,
+) -> dict:
+    """
+    Weekly twin of `compute_horizon_bucketed_quarterly_residual_quantile_table`
+    -- bucketed by `week_position` (1st..FORECAST_HORIZON-th week of the
+    rollout). Grain already equals the bucket here (one row per week), so
+    there's no quarterly/monthly-style summing step before taking residuals,
+    but the `actual_sum`/`predicted_sum` naming is kept for symmetry with the
+    other two horizon-bucketed tables and so `apply_horizon_bucketed_quantile_table`
+    doesn't need a special case.
+    Returns {1: {...}, ..., FORECAST_HORIZON: {...}}.
+    """
+    lower_q, upper_q = quantile_bounds()
+    sub = fold_predictions_ar[fold_predictions_ar["model"] == model_name].copy()
+    sub = sub[~is_known_data_gap(sub)]
+
+    grouped = sub.groupby([CITY_COL, "fold", "week_position"]).agg(
+        actual_sum=(TARGET, "sum"),
+        predicted_sum=("predicted", "sum"),
+        **{PROXY_COL: (PROXY_COL, "first")},
+    ).reset_index()
+
+    log_resid = np.log1p(grouped["actual_sum"]) - np.log1p(grouped["predicted_sum"])
+
+    table = {}
+    for wpos in range(1, FORECAST_HORIZON + 1):
+        bucket_mask  = grouped["week_position"] == wpos
+        bucket_resid = log_resid[bucket_mask]
+        bucket_proxy = grouped.loc[bucket_mask, PROXY_COL]
+
+        low_resid  = bucket_resid[bucket_proxy <  REGIME_THRESHOLD]
+        high_resid = bucket_resid[bucket_proxy >= REGIME_THRESHOLD]
+
+        table[wpos] = {
+            "proxy_col": PROXY_SOURCE_FEATURE,
+            "threshold": REGIME_THRESHOLD,
+            "low":  {"q_lower": float(low_resid.quantile(lower_q)),  "q_upper": float(low_resid.quantile(upper_q))},
+            "high": {"q_lower": float(high_resid.quantile(lower_q)), "q_upper": float(high_resid.quantile(upper_q))},
+        }
+    return table
+
+
+def apply_horizon_bucketed_quantile_table(
+    predicted: np.ndarray,
+    proxy: np.ndarray,
+    position: np.ndarray,
+    bucketed_table: dict,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Dispatch each row to `apply_residual_quantile_table` for its bucket
+    position (week/month/quarter -- whichever grain `bucketed_table` was
+    built at, by compute_horizon_bucketed_{weekly,monthly,quarterly}_
+    residual_quantile_table)."""
+    predicted = np.asarray(predicted, dtype=float)
+    proxy = np.asarray(proxy, dtype=float)
+    position = np.asarray(position)
+
+    lower = np.full(len(predicted), np.nan)
+    upper = np.full(len(predicted), np.nan)
+    for pos, table in bucketed_table.items():
+        mask = position == pos
+        if not mask.any():
+            continue
+        lower[mask], upper[mask] = apply_residual_quantile_table(predicted[mask], proxy[mask], table)
+    return lower, upper
 
 
 def attach_classifier_proxy(

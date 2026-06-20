@@ -110,3 +110,73 @@ _Auto-maintained by Claude Code. One entry per completed task._
 - Not validated against a real current-grain run: no `ml/results/run_*/fold_predictions.csv` on disk yet has the post-weekly-conversion `week_start` schema (all existing runs predate that conversion and use `month_start`/`quarter_start` from the old grain) — `aggregate_weekly_oof_predictions_to_quarterly` and both plot functions were smoke-tested against synthetic data matching the current schema instead (verified they render without error and look visually correct). Full test suite (22 tests) still passes.
 
 ---
+## Fix oversized CI bands: exclude known data-collection gap from calibration, add monthly OOF validation plot, raise CI to 97.5% — 2026-06-20 15:22
+
+**Goal:** Diagnose why the regime-conditional CI bands (`conditional_residuals.py`) looked absurdly wide during low-incidence/trough periods on the weekly OOF diagnostic plot, and fix it.
+
+**Changes:**
+- `ml/src/dengue_ml/validation/conditional_residuals.py`:
+  - Added `KNOWN_DATA_GAPS` + `_is_known_data_gap()`: flags Vitória's 2021-01-03 to 2021-12-05 window (49 straight weeks of `casos_est == casos_est_min == casos_est_max == casos == 0`, confirmed against `ml/data/raw/infodengue_capitals_subsetBR.csv` — a real surveillance/reporting outage, not actual epidemiology). These rows are now dropped from the calibration pool in `assign_loFo_conditional_ci`, `compute_residual_quantile_table`, `compute_quarterly_residual_quantile_table`, and `compute_horizon_bucketed_quarterly_residual_quantile_table`, but still receive their own `lower_95`/`upper_95` and stay visible in plots/history.
+  - Added `aggregate_oof_to_monthly(fold_predictions, model_name)`: sums weekly OOF rows to (city, month, fold), reusing `assign_loFo_conditional_ci` unmodified on the result.
+  - Briefly added a `magnitude_bins` parameter (sub-binning each regime bucket by predicted-value magnitude) to fix the same symptom before the real root cause (the data gap) was found; removed again once the gap fix alone outperformed it on worst-case width and coverage. No `magnitude_bins`/`_magnitude_bin_edges` code remains.
+  - Renamed `_quantile_bounds()` → `quantile_bounds()` (now a public cross-module API — `plots.py` calls it to label CI plots dynamically).
+- `ml/src/dengue_ml/reporting/plots.py` — new `plot_oof_predictions_monthly(fold_predictions, model_name, outputs_dir, log_scale)`: monthly-grain counterpart of `plot_oof_predictions`, with a CI-level label computed dynamically from `quantile_bounds()` rather than hardcoded "95%".
+- `ml/src/dengue_ml/training/train_pipeline.py` — calls `plot_oof_predictions_monthly` (log + linear) alongside the existing weekly OOF plots, so every future run generates both automatically.
+- `ml/configs/model_training.yaml` — `xgboost.quantiles` changed from 95% (0.025/0.975) to 97.5% (0.0125/0.9875) per user's explicit choice. This is a global knob: it also changes the production quarterly forecast deliverable's band, not just the OOF plots.
+- `ml/results/run_20260620_034022/figures/` — regenerated `oof_predictions_xrfm_cases_climate_monthly{,_log}.png` at 97.5% CI, plus two ad-hoc diagnostic bar charts (`coverage_with_vs_without_gap.png`, `coverage_old_vs_new_band.png`, `coverage_975_with_vs_without_gap.png`) comparing OOF coverage with/without the gap rows included in evaluation, and old (un-fixed) vs. new (gap-fixed) band width.
+
+**Why:** The weekly OOF plot showed huge CI bands specifically during non-epidemic/trough periods, which looked backwards (peaks should be harder to predict, not troughs). Traced it to Vitória's 2021 data being fabricated zeros that get pooled into the shared low-regime calibration bucket used by *all four cities* — a handful of impossible residuals (predicted ~50-115, actual forced to 0 for a full year) were setting the lower-tail quantile for every city's quiet-season weeks. Excluding those rows from calibration (while keeping them visible as real history) dropped the worst-case monthly band width ratio from ~150x to ~3-4x with no loss to legitimate coverage elsewhere.
+
+**Assumptions & trade-offs:**
+- The gap window (2021-01-03 to 2021-12-05) is hardcoded as a list literal rather than auto-detected from the raw data — deliberate, since auto-detecting "implausible zero streaks" generically risks false positives on real quiet seasons; this is a known, manually-verified, one-off data anomaly.
+- 97.5% CI was the user's explicit choice after comparing 80/90/95/97.5/99% empirically (coverage tracks the target monotonically, each landing 1-3pp below nominal — attributed to finite-sample LOFO calibration noise, year-to-year non-stationarity, a real systematic blind spot at epidemic-onset acceleration, and binomial sampling noise in the coverage estimate itself, not to the quantile choice).
+- All 22 `ml/tests` pass throughout every step (gap exclusion, magnitude-bin add + revert, CI level change).
+
+---
+## Wire coverage-by-gap and residual-distribution diagnostics into every training run — 2026-06-20 16:21
+
+**Goal:** Make the gap-vs-no-gap coverage comparison and a regime-conditional residual-distribution view permanent, automatic outputs of every training run, instead of one-off ad-hoc figures.
+
+**Changes:**
+- `ml/src/dengue_ml/reporting/results_tables.py` — new `coverage_by_gap_table(fold_predictions, model_name, outputs_dir)`: per-city + overall monthly OOF coverage, with vs. without `KNOWN_DATA_GAPS` rows included in the evaluation (they're already excluded from *calibration* everywhere; this table is about *evaluation*). Saves `coverage_by_gap.csv`.
+- `ml/src/dengue_ml/reporting/plots.py`:
+  - New `plot_coverage_by_gap(coverage_table, outputs_dir)` — bar chart of the above, saved as `coverage_by_gap.png`.
+  - New `plot_residual_distribution(fold_predictions, model_name, outputs_dir)` — histogram of weekly log1p residuals split by CI regime (`growth_proxy >= REGIME_THRESHOLD`), with each regime's actual `quantile_bounds()` cutoffs overlaid as dashed vertical lines, gap rows excluded. Saved as `residual_distribution_{model_name}.png`.
+  - `plot_proxy_comparison`'s nominal-coverage reference line was hardcoded to 95% — changed to read `quantile_bounds()` dynamically so it can't go stale again the way it already had after the CI level changed to 97.5%.
+- `ml/src/dengue_ml/validation/conditional_residuals.py` — renamed `_is_known_data_gap` → `is_known_data_gap` (now genuinely cross-module public API, used by both `results_tables.py` and `plots.py`).
+- `ml/src/dengue_ml/training/train_pipeline.py` — calls `coverage_by_gap_table`/`plot_coverage_by_gap`/`plot_residual_distribution` for `best_model` right after the existing OOF plots, and prints the coverage table to console.
+
+**Why:** These started as one-off diagnostic figures generated by hand to answer specific questions during this session (does the gap fix actually help? what does the residual shape look like per regime?). Promoting them into the pipeline means every future run gets this visibility automatically rather than requiring another ad-hoc investigation.
+
+**Assumptions & trade-offs:**
+- `plot_residual_distribution` pools residuals across all 4 cities rather than faceting per-city (unlike the OOF time-series plots) — regime is the calibration axis that matters here, not city, and per-city faceting would mean re-deriving 4x smaller histograms for a question that's fundamentally about the shared regime-conditional calibration pool.
+- Both new figures are generated only for `best_model`, matching the existing OOF-plot convention, not for every candidate model.
+- All 25 `ml/tests` pass; new functions' output verified to match the manually-computed numbers from earlier in the session exactly.
+
+---
+## Add weekly/monthly year-over-year forecast deliverable + GIF frames — 2026-06-20 17:34
+
+**Goal:** Extend the quarterly-only forecast deliverable to weekly and monthly grains, and replace the old "concatenated timeline + gray-dashed previous-year overlay" comparison plot with a single period-of-year axis (Q1-Q4 / Jan-Dec / W1-W52) overlaying last year's actuals, last year's model OOF estimate (with its own CI), and this year's forecast (with its own horizon-aware CI) — plus sequential per-point frames assembled into a GIF for each grain.
+
+**Changes:**
+- `ml/src/dengue_ml/validation/autoregressive_cv.py` — `_run_one_fold` now also tags each autoregressive-rollout row with `month_position` (calendar month, exact since outer test windows start Jan 1, same property `quarter_position` already relied on) and `week_position` (the rollout's own 1..horizon step count, since ISO week numbering has 52/53-week edge cases calendar month/quarter don't).
+- `ml/src/dengue_ml/validation/conditional_residuals.py`:
+  - New `aggregate_oof_to_quarterly` (quarterly twin of `aggregate_oof_to_monthly`) — feeds `assign_loFo_conditional_ci` for the redesigned plot's "previous year estimated cases" line at quarterly grain.
+  - New `compute_horizon_bucketed_monthly_residual_quantile_table` / `compute_horizon_bucketed_weekly_residual_quantile_table` — siblings of the existing quarterly one, bucketed by `month_position` (1..12) / `week_position` (1..52) instead of `quarter_position` (1..4).
+  - `apply_horizon_bucketed_quantile_table`'s position parameter renamed from `quarter_position` to `position` (purely a rename — it was already generic, just mislabeled); all existing positional callers unaffected.
+- `ml/src/dengue_ml/forecasting/quarterly_aggregation.py` — new `aggregate_weekly_forecast_to_monthly` / `aggregate_weekly_history_to_monthly`, monthly twins of the existing quarterly functions. Existing quarterly function names/columns left untouched (the FastAPI app's `app/src/dengue_app/data.py` imports them directly).
+- `ml/src/dengue_ml/reporting/plots.py`:
+  - New `plot_forecast_year_over_year(period_labels, prev_actual, prev_oof, forecast, prev_year, forecast_year, outputs_dir, ...)` — blue dotted "{prev_year} Historical Data" (no CI), red dotted "{prev_year} Estimated Cases" (model's own LOFO-conditional CI), green solid "{forecast_year} Forecast" (horizon-aware CI where available), all on one period-of-year x-axis. `reveal_n` parameter drops forecast/prev_oof rows past a given x_pos for frame-by-frame reveal.
+  - New `plot_forecast_year_over_year_frames` — renders one frame per period, fixing each city's y-axis across all frames (`_city_ylim`) so the GIF doesn't rescale, then assembles `forecast.gif` via Pillow (already an indirect dependency through matplotlib, no new dependency added).
+  - New `_savefig_into` helper — the existing `_savefig`/`_resolve_fig_dir` always append `/figures` to whatever directory is passed, which doesn't fit the new nested `figures/forecast/{week,month,quarter}/` layout; `_savefig_into` writes directly into a fully-specified directory instead.
+- `ml/scripts/generate_forecasts.py` — after the existing quarterly horizon-aware block, assembles prev-year-actual/prev-year-OOF/forecast frames at all three grains and calls the new plot + frame/GIF functions, writing into `run_dir/figures/forecast/{quarterly,monthly,weekly}/`. Loads `fold_predictions.csv` and `fold_predictions_ar.csv` directly (rather than relying on variables from earlier in the script) so the block degrades gracefully (prints a skip message) if either file, or `horizon_quantiles`, is missing.
+
+**Why:** User wanted forecast granularity finer than quarterly for a more detailed view, and a year-over-year comparison plot that reads more like "this year vs last year" than a sliding timeline, plus a way to build an animated reveal of the forecast for a presentation.
+
+**Assumptions & trade-offs:**
+- `forecast_year`/`prev_year` are derived once from `weekly_forecast_df["forecast_week"].min().year` (and `- 1`), not from the actual calendar coverage of every series — correct as long as the forecast starts at/near a calendar year boundary, which matches current production usage (`MAX_RELIABLE_WEEK` runs through Dec 28).
+- Forecast-side x_pos uses a per-city rank of forecast period (1..N, consistent with how the horizon-bucketed CI itself is keyed), while previous-year x_pos uses the literal calendar period (quarter/month/ISO week) — intentionally asymmetric since one is "steps into the rollout" and the other is "calendar position," and in practice both line up because production forecasts start on a year boundary.
+- Monthly/weekly horizon-bucketed tables are computed on-the-fly in `generate_forecasts.py` from `fold_predictions_ar.csv` rather than being precomputed and stored in `final_model.pkl` (unlike the existing quarterly `horizon_quantiles`) — avoids touching `training/final_train.py` / requiring a retrain; the computation itself is cheap (groupby + quantile).
+- Verified with synthetic smoke tests (small fabricated fold/forecast data) for all three grains rather than a full pipeline re-run — a real pipeline run (`run_nested_cv.py` → `run_autoregressive_cv.py` → ...) was already in progress on a SLURM compute node at the time, and the remaining steps are CPU-heavy multi-fold model training inappropriate to duplicate on the shared login node. The on-disk `fold_predictions_ar.csv` from the most recent completed run predates the `month_position`/`week_position` columns, so the new monthly/weekly deliverable will only appear after the next full `run_autoregressive_cv.py` run (the currently-running pipeline, or a future one).
+
+---

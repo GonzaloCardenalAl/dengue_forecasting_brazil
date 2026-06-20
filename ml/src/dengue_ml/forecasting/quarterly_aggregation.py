@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from dengue_ml.config import CITY_COL
+from dengue_ml.config import CITY_COL, TARGET
 from dengue_ml.validation.conditional_residuals import (
     apply_residual_quantile_table, apply_horizon_bucketed_quantile_table,
 )
@@ -66,6 +66,64 @@ def aggregate_weekly_forecast_to_quarterly(
     grouped["upper_95"] = upper
 
     return grouped[["city", "forecast_quarter", "predicted_cases", "lower_95", "upper_95", "proxy_value", "model_name"]]
+
+
+def aggregate_weekly_forecast_to_monthly(
+    weekly_forecast_df: pd.DataFrame,
+    horizon_bucketed_quantiles: dict | None = None,
+) -> pd.DataFrame:
+    """
+    Monthly twin of `aggregate_weekly_forecast_to_quarterly`, for the
+    weekly/monthly forecast deliverable -- same horizon-bucketed CI
+    approach, just keyed off `month_position` (1st..12th month of this
+    forecast, ranked per city) instead of `quarter_position`. No flat
+    (non-horizon-aware) fallback table here -- the monthly deliverable only
+    exists once the autoregressive CV horizon-bucketed table is available.
+
+    Returns DataFrame: city, forecast_month, predicted_cases, lower_95,
+    upper_95, proxy_value, model_name.
+    """
+    df = weekly_forecast_df.copy().sort_values("forecast_week")
+    df["forecast_month"] = df["forecast_week"].values.astype("datetime64[M]")
+
+    grouped = df.groupby(["city", "forecast_month"]).agg(
+        predicted_cases=("predicted_cases", "sum"),
+        proxy_value=("proxy_value", "first"),
+        model_name=("model_name", "first"),
+    ).reset_index()
+
+    if horizon_bucketed_quantiles is not None and grouped["proxy_value"].notna().any():
+        month_position = grouped.groupby("city")["forecast_month"].rank(method="first").astype(int)
+        lower, upper = apply_horizon_bucketed_quantile_table(
+            grouped["predicted_cases"].values,
+            grouped["proxy_value"].values,
+            month_position.values,
+            horizon_bucketed_quantiles,
+        )
+    else:
+        lower = upper = np.full(len(grouped), np.nan)
+
+    grouped["lower_95"] = lower
+    grouped["upper_95"] = upper
+
+    return grouped[["city", "forecast_month", "predicted_cases", "lower_95", "upper_95", "proxy_value", "model_name"]]
+
+
+def aggregate_weekly_history_to_monthly(weekly_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Monthly twin of `aggregate_weekly_history_to_quarterly`, sums of casos_est
+    only (the redesigned year-over-year plot doesn't show the historical
+    casos_est_min/max reporting-uncertainty band, unlike plot_final_forecast).
+    """
+    df = weekly_df.copy()
+    df["month_start"] = df["week_start"].values.astype("datetime64[M]")
+
+    agg = (
+        df.groupby([CITY_COL, "month_start"], sort=True)[TARGET]
+        .sum()
+        .reset_index()
+    )
+    return agg.sort_values([CITY_COL, "month_start"]).reset_index(drop=True)
 
 
 def aggregate_weekly_classifier_to_quarterly(

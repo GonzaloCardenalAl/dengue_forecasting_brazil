@@ -10,8 +10,8 @@ def get_model_params(model_name: str, overrides: dict | None = None) -> dict:
         params = get_default_xrfm_params()
     elif model_name == "sarima":
         params = {
-            "order":          (1, 1, 1),
-            "seasonal_order": (0, 1, 0, 4),
+            "order":         (1, 1, 1),
+            "fourier_order": 2,
         }
     else:
         params = {}

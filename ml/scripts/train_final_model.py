@@ -15,6 +15,7 @@ if __name__ == "__main__":
 
     fold_metrics_path = run_dir / "fold_metrics.csv"
     fold_predictions_path = run_dir / "fold_predictions.csv"
+    fold_predictions_ar_path = run_dir / "fold_predictions_ar.csv"
     fold_metrics_clf_path = run_dir / "fold_metrics_clf.csv"
     if not fold_metrics_path.exists():
         raise FileNotFoundError(
@@ -23,19 +24,24 @@ if __name__ == "__main__":
 
     fold_metrics = pd.read_csv(fold_metrics_path)
     fold_predictions = pd.read_csv(fold_predictions_path) if fold_predictions_path.exists() else None
+    # Optional -- only present if run_autoregressive_cv.py has been run for
+    # this run dir. None -> artifact["horizon_quantiles"] stays None and the
+    # production forecast just skips the parallel horizon-aware deliverable.
+    fold_predictions_ar = pd.read_csv(fold_predictions_ar_path) if fold_predictions_ar_path.exists() else None
     best_model, best_mae = select_best_model(fold_metrics)
     print(f"Best model: {best_model}  (median MAE = {best_mae:.1f} cases)")
 
     df = prepare_model_table()
     artifact = train_final_model(
         selected_model_name=best_model, df=df, outputs_dir=run_dir,
-        fold_predictions=fold_predictions,
+        fold_predictions=fold_predictions, fold_predictions_ar=fold_predictions_ar,
     )
 
     if "model" in artifact and hasattr(artifact["model"], "feature_importances_"):
         feat_cols = artifact["feature_cols"]
+        model_label = "xRFM" if best_model.startswith("xrfm") else "XGBoost"
         feature_importance_table(artifact["model"], feat_cols, outputs_dir=run_dir)
-        plot_feature_importance(artifact["model"], feat_cols)
+        plot_feature_importance(artifact["model"], feat_cols, model_label=model_label)
         print("Feature importance saved.")
 
     # Final epidemic classifier -- its predicted probability is the

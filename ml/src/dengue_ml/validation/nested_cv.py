@@ -7,7 +7,7 @@ from dengue_ml.config import (
 )
 from dengue_ml.features.feature_pipeline import build_features_for_split
 from dengue_ml.models.baseline import seasonal_naive_forecast
-from dengue_ml.models.sarima import tune_sarima, fit_sarima, forecast_sarima
+from dengue_ml.models.sarima import tune_sarima, fit_sarima, forecast_sarima, fourier_terms
 from dengue_ml.models.xgboost_models import train_xgb, predict_xgb
 from dengue_ml.models.xrfm_models import train_xrfm, predict_xrfm
 from dengue_ml.training.hyperparameter_search import random_search_xgb, random_search_xrfm
@@ -109,12 +109,16 @@ def _run_one_model(
             if city_train.empty or city_test.empty:
                 continue
 
-            order, sorder = tune_sarima(city_train, inner_splits, city=city)
+            order, k = tune_sarima(city_train, inner_splits, city=city)
             train_s = (
                 city_train.set_index("week_start")[TARGET].sort_index()
             )
-            result = fit_sarima(np.log1p(train_s), order, sorder)
-            preds_log, lower_log, upper_log = forecast_sarima(result, horizon=len(city_test))
+            train_exog = fourier_terms(train_s.index, k)
+            result = fit_sarima(np.log1p(train_s), order, exog=train_exog)
+            test_exog = fourier_terms(pd.DatetimeIndex(city_test["week_start"]), k)
+            preds_log, lower_log, upper_log = forecast_sarima(
+                result, horizon=len(city_test), exog=test_exog
+            )
             preds = np.expm1(preds_log)
 
             city_df = city_test[[CITY_COL, "week_start"]].copy()
@@ -122,8 +126,8 @@ def _run_one_model(
             city_df["lower_95"]  = np.expm1(lower_log)
             city_df["upper_95"]  = np.expm1(upper_log)
             city_preds.append(city_df)
-            city_hparams[f"{city}_order"]  = str(order)
-            city_hparams[f"{city}_sorder"] = str(sorder)
+            city_hparams[f"{city}_order"]         = str(order)
+            city_hparams[f"{city}_fourier_order"] = k
 
         return pd.concat(city_preds, ignore_index=True), city_hparams
 

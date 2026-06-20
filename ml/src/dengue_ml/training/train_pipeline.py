@@ -6,9 +6,12 @@ from dengue_ml.validation.nested_cv import run_nested_cv
 from dengue_ml.validation.nested_cv_classifier import run_nested_cv_classifier
 from dengue_ml.validation.conditional_residuals import attach_classifier_proxy
 from dengue_ml.reporting.results_tables import (
-    model_comparison_table, metrics_by_fold, baseline_improvement_table,
+    model_comparison_table, metrics_by_fold, baseline_improvement_table, coverage_by_gap_table,
 )
-from dengue_ml.reporting.plots import plot_oof_predictions, plot_model_comparison
+from dengue_ml.reporting.plots import (
+    plot_oof_predictions, plot_oof_predictions_monthly, plot_model_comparison, plot_coverage_by_gap,
+    plot_residual_distribution,
+)
 from dengue_ml.training.final_train import select_best_model, select_best_classifier
 
 
@@ -35,9 +38,10 @@ def run_training_pipeline(
     fold_metrics, fold_predictions, best_hparams = run_nested_cv(df)
 
     print("\nRunning classifier nested cross-validation (CI-regime proxy) ...")
-    fold_metrics_clf, fold_predictions_clf = run_nested_cv_classifier(df)
+    fold_metrics_clf, fold_predictions_clf, best_hparams_clf = run_nested_cv_classifier(df)
     fold_metrics_clf.to_csv(outputs_dir / "fold_metrics_clf.csv", index=False)
     fold_predictions_clf.to_csv(outputs_dir / "fold_predictions_clf.csv", index=False)
+    best_hparams_clf.to_csv(outputs_dir / "best_hyperparameters_clf.csv", index=False)
 
     best_classifier, best_auc = select_best_classifier(fold_metrics_clf)
     print(f"Best classifier (by mean AUC): {best_classifier} (AUC = {best_auc:.3f})")
@@ -72,7 +76,16 @@ def run_training_pipeline(
     print(f"\nBest model (by avg rank of median + std MAE): {best_model}")
     plot_oof_predictions(fold_predictions, best_model, outputs_dir=outputs_dir, log_scale=False)
     plot_oof_predictions(fold_predictions, best_model, outputs_dir=outputs_dir, log_scale=True)
-    print(f"OOF predictions plots saved for '{best_model}' (log + linear)")
+    plot_oof_predictions_monthly(fold_predictions, best_model, outputs_dir=outputs_dir, log_scale=False)
+    plot_oof_predictions_monthly(fold_predictions, best_model, outputs_dir=outputs_dir, log_scale=True)
+    print(f"OOF predictions plots saved for '{best_model}' (weekly + monthly, log + linear)")
+
+    coverage_gap = coverage_by_gap_table(fold_predictions, best_model, outputs_dir=outputs_dir)
+    plot_coverage_by_gap(coverage_gap, outputs_dir=outputs_dir)
+    print("\n=== Monthly OOF coverage, including vs. excluding known data gaps ===")
+    print(coverage_gap.to_string(index=False))
+
+    plot_residual_distribution(fold_predictions, best_model, outputs_dir=outputs_dir)
 
     print(f"\nOutputs saved to {outputs_dir}")
 

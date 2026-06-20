@@ -39,40 +39,56 @@ if [ ${STATUS} -ne 0 ]; then
 fi
 echo "<<< STEP 1 done at $(date)"
 
-# ── Step 2: Epidemic classifier CV + proxy comparison (evaluation-only; not
+# ── Step 2: Autoregressive CV (horizon-aware CI calibration) -- second
+# validation, separate from Step 1's nested CV. Needs Step 1's
+# fold_metrics.csv/best_hyperparameters.csv/best_hyperparameters_clf.csv/
+# selected_classifier.txt in the same run dir; reuses Step 1's already-tuned
+# hyperparameters (no new search), parallelized across the 10 outer folds.
+# Non-fatal: a failure here shouldn't block the production forecast in
+# Steps 4-5, it just means the parallel horizon-aware deliverable is skipped.
+echo ""
+echo ">>> STEP 2: Autoregressive CV (horizon-aware CI calibration)"
+python "${SCRIPTS_DIR}/run_autoregressive_cv.py"
+STATUS=$?
+if [ ${STATUS} -ne 0 ]; then
+    echo "WARNING: run_autoregressive_cv.py failed with exit code ${STATUS} (continuing -- horizon-aware deliverable will be skipped)"
+fi
+echo "<<< STEP 2 done at $(date)"
+
+# ── Step 3: Epidemic classifier CV + proxy comparison (evaluation-only; not
 # wired into final_model/forecasts) -- needs Step 1's fold_predictions.csv in
 # the same run dir, which is why it runs right after it. Non-fatal: a failure
-# here shouldn't block the production forecast in Steps 3-4.
+# here shouldn't block the production forecast in Steps 4-5.
 echo ""
-echo ">>> STEP 2: Epidemic classifier CV + proxy comparison"
+echo ">>> STEP 3: Epidemic classifier CV + proxy comparison"
 python "${SCRIPTS_DIR}/run_classifier_cv.py"
 STATUS=$?
 if [ ${STATUS} -ne 0 ]; then
     echo "WARNING: run_classifier_cv.py failed with exit code ${STATUS} (continuing -- evaluation-only step)"
 fi
-echo "<<< STEP 2 done at $(date)"
+echo "<<< STEP 3 done at $(date)"
 
-# ── Step 3: Train final model on all data ─────────────────────────────────────
+# ── Step 4: Train final model on all data ─────────────────────────────────────
 echo ""
-echo ">>> STEP 3: Train final model"
+echo ">>> STEP 4: Train final model"
 python "${SCRIPTS_DIR}/train_final_model.py"
 STATUS=$?
 if [ ${STATUS} -ne 0 ]; then
     echo "ERROR: train_final_model.py failed with exit code ${STATUS}"
     exit ${STATUS}
 fi
-echo "<<< STEP 3 done at $(date)"
+echo "<<< STEP 4 done at $(date)"
 
-# ── Step 4: Generate forecasts ────────────────────────────────────────────────
+# ── Step 5: Generate forecasts ────────────────────────────────────────────────
 echo ""
-echo ">>> STEP 4: Generate forecasts"
+echo ">>> STEP 5: Generate forecasts"
 python "${SCRIPTS_DIR}/generate_forecasts.py"
 STATUS=$?
 if [ ${STATUS} -ne 0 ]; then
     echo "ERROR: generate_forecasts.py failed with exit code ${STATUS}"
     exit ${STATUS}
 fi
-echo "<<< STEP 4 done at $(date)"
+echo "<<< STEP 5 done at $(date)"
 
 echo ""
 echo "─────────────────────────────────────────────────────────"

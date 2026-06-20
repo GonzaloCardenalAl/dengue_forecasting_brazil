@@ -6,6 +6,7 @@ independently usable by other consumers).
 """
 
 import os
+from pathlib import Path
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -13,6 +14,7 @@ import requests
 import streamlit as st
 
 API_URL = os.environ.get("DENGUE_API_URL", "http://localhost:8000")
+LOGO_PATH = Path(__file__).resolve().parents[2] / "DORA_logo.png"
 
 QUARTER_LABELS = {1: "Q1", 4: "Q2", 7: "Q3", 10: "Q4"}
 
@@ -59,110 +61,162 @@ def get_recommendations() -> dict:
     return api_get("/risk/recommendations")
 
 
-st.set_page_config(page_title="DORA", page_icon="🦟", layout="wide")
-st.title("🦟 DORA — Dengue Outbreak Response Assistant")
-st.caption("AI-powered dengue forecasting and risk monitoring for Southeast Brazil")
+st.set_page_config(page_title="DORA", page_icon=str(LOGO_PATH), layout="wide")
+
+# Font (Inter) + larger mode selector + larger city selector + larger
+# subtitle/title -- several selector variants stacked since Streamlit's
+# internal data-testids can shift between versions.
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+
+    .dora-title h1 { font-size: 3.2rem !important; margin: 0 !important; line-height: 1; }
+    .dora-subtitle { font-size: 1.25rem !important; color: #555; margin-top: 4px; }
+
+    div[data-testid="stRadio"] [data-testid="stWidgetLabel"] p { font-size: 1.3rem !important; }
+    div[data-testid="stRadio"] label p { font-size: 1.2rem !important; }
+
+    div[data-testid="stSelectbox"] label p { font-size: 1.25rem !important; }
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] * { font-size: 1.15rem !important; }
+    div[data-baseweb="popover"] li { font-size: 1.15rem !important; }
+    ul[role="listbox"] * { font-size: 1.15rem !important; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+logo_col, title_col = st.columns([1, 5], vertical_alignment="center")
+with logo_col:
+    st.image(str(LOGO_PATH), width=320)
+with title_col:
+    st.markdown('<div class="dora-title">', unsafe_allow_html=True)
+    st.title("Dengue Outbreak Response Assistant")
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown(
+        '<p class="dora-subtitle">AI-powered dengue forecasting and risk monitoring for Southeast Brazil</p>',
+        unsafe_allow_html=True,
+    )
 
 cities_df = get_cities()
 city_names = cities_df["city_name"].tolist()
 
-mode = st.sidebar.radio("Mode", ["Current forecast", "Historical"])
+mode = st.radio("Mode", ["Current forecast", "Future forecast", "Historical"], horizontal=True)
+is_forecast_mode = mode in ("Current forecast", "Future forecast")
 
-# Full unfiltered backtest, used both to bound the historical date picker and
-# to build the 3-year trend comparison in historical mode.
+forecast_df = get_forecast() if is_forecast_mode else None
+# Full unfiltered backtest, used both to bound the historical quarter picker
+# and to build the 3-year trend comparison.
 backtest_all = get_backtest()
 available_quarters = sorted(backtest_all["quarter_start"].dropna().unique()) if not backtest_all.empty else []
+backtest_quarter_options = [pd.Timestamp(q).strftime("%Y-%m-%d") for q in available_quarters]
 
-if mode == "Historical":
-    if not available_quarters:
-        st.warning("No backtest data available yet.")
+if mode == "Historical" and not backtest_quarter_options:
+    st.warning("No backtest data available yet.")
+    st.stop()
+
+if mode == "Future forecast":
+    forecast_quarter_options = [
+        d.strftime("%Y-%m-%d") for d in sorted(forecast_df["forecast_quarter"].unique())
+    ]
+    if not forecast_quarter_options:
+        st.warning("No forecast data available yet.")
         st.stop()
-    quarter_options = [pd.Timestamp(q).strftime("%Y-%m-%d") for q in available_quarters]
-    selected_quarter = st.sidebar.selectbox(
-        "Quarter", quarter_options, index=len(quarter_options) - 1,
-        format_func=quarter_label,
-    )
-else:
-    selected_quarter = None
 
-# ── Map status data: one row per city for the quarter currently in focus ───
-if mode == "Current forecast":
-    forecast_df = get_forecast()
-    soonest_idx = forecast_df.groupby("city_name")["forecast_quarter"].idxmin()
-    status_df = forecast_df.loc[soonest_idx].copy()
-    status_df["epidemic_proba"] = status_df["proxy_value"]
-    status_df["is_epidemic"] = status_df["epidemic_proba"] >= 0.5
-    focus_quarter_label = quarter_label(status_df["forecast_quarter"].iloc[0].strftime("%Y-%m-%d"))
-else:
-    status_df = backtest_all[backtest_all["quarter_start"] == pd.Timestamp(selected_quarter)].copy()
-    status_df["epidemic_proba"] = status_df["predicted_proba"]
-    focus_quarter_label = quarter_label(selected_quarter)
-
-status_df = status_df.merge(cities_df, on="city_name", how="left")
-
-st.subheader(f"Status map — {focus_quarter_label}")
-
-fig_map = go.Figure(
-    go.Scattergeo(
-        lon=status_df["lon"],
-        lat=status_df["lat"],
-        text=status_df["city_name"],
-        mode="markers+text",
-        textposition="top center",
-        marker=dict(
-            size=22,
-            color=["#e74c3c" if e else "#2ecc71" for e in status_df["is_epidemic"]],
-            line=dict(width=1, color="black"),
-        ),
-        hovertext=[
-            f"{row.city_name}<br>Predicted cases: {row.predicted_cases:,.0f}<br>"
-            f"Epidemic probability: {row.epidemic_proba:.0%}"
-            for row in status_df.itertuples()
-        ],
-        hoverinfo="text",
-    )
-)
-fig_map.update_geos(
-    scope="south america", fitbounds="locations", visible=True,
-    showcountries=True, showsubunits=True,
-)
-fig_map.update_layout(height=450, margin=dict(l=0, r=0, t=0, b=0))
-st.plotly_chart(fig_map, width="stretch")
-
-# ── City selector + detail panel ────────────────────────────────────────────
 selected_city = st.selectbox("City", city_names)
+
+# ── Map (left) + status stats (right), same row ─────────────────────────────
+map_col, stats_col = st.columns([2, 1])
+
+with map_col:
+    map_title_col, picker_col = st.columns([2, 2])
+
+    selected_quarter = None
+    selected_forecast_quarter = None
+    focus_quarter_label = None
+
+    if mode == "Historical":
+        with picker_col:
+            selected_quarter = st.selectbox(
+                "Quarter", backtest_quarter_options, index=len(backtest_quarter_options) - 1,
+                format_func=quarter_label, label_visibility="collapsed",
+            )
+        focus_quarter_label = quarter_label(selected_quarter)
+    elif mode == "Future forecast":
+        with picker_col:
+            selected_forecast_quarter = st.selectbox(
+                "Forecast quarter", forecast_quarter_options, index=0,
+                format_func=quarter_label, label_visibility="collapsed",
+            )
+        focus_quarter_label = quarter_label(selected_forecast_quarter)
+
+    if mode == "Current forecast":
+        soonest_idx = forecast_df.groupby("city_name")["forecast_quarter"].idxmin()
+        status_df = forecast_df.loc[soonest_idx].copy()
+        status_df["epidemic_proba"] = status_df["proxy_value"]
+        status_df["is_epidemic"] = status_df["epidemic_proba"] >= 0.5
+        focus_quarter_label = quarter_label(status_df["forecast_quarter"].iloc[0].strftime("%Y-%m-%d"))
+    elif mode == "Future forecast":
+        status_df = forecast_df[forecast_df["forecast_quarter"] == pd.Timestamp(selected_forecast_quarter)].copy()
+        status_df["epidemic_proba"] = status_df["proxy_value"]
+        status_df["is_epidemic"] = status_df["epidemic_proba"] >= 0.5
+    else:
+        status_df = backtest_all[backtest_all["quarter_start"] == pd.Timestamp(selected_quarter)].copy()
+        status_df["epidemic_proba"] = status_df["predicted_proba"]
+
+    status_df = status_df.merge(cities_df, on="city_name", how="left")
+
+    with map_title_col:
+        st.subheader(f"Status map — {focus_quarter_label}")
+
+    fig_map = go.Figure(
+        go.Scattergeo(
+            lon=status_df["lon"],
+            lat=status_df["lat"],
+            text=status_df["city_name"],
+            mode="markers+text",
+            textposition="top center",
+            marker=dict(
+                size=22,
+                color=["#e74c3c" if e else "#2ecc71" for e in status_df["is_epidemic"]],
+                line=dict(width=1, color="black"),
+            ),
+            hovertext=[
+                f"{row.city_name}<br>Predicted cases: {row.predicted_cases:,.0f}<br>"
+                f"Epidemic probability: {row.epidemic_proba:.0%}"
+                for row in status_df.itertuples()
+            ],
+            hoverinfo="text",
+        )
+    )
+    fig_map.update_geos(
+        scope="south america", fitbounds="locations", visible=True,
+        showcountries=True, showsubunits=True,
+    )
+    fig_map.update_layout(height=450, margin=dict(l=0, r=0, t=0, b=0))
+    st.plotly_chart(fig_map, width="stretch")
 
 city_row = status_df[status_df["city_name"] == selected_city]
 if city_row.empty:
     st.warning(f"No data for {selected_city} in this quarter.")
     st.stop()
 city_row = city_row.iloc[0]
-
 risk_tier = city_row["risk_tier"]
-recs = get_recommendations()[risk_tier]
 
-col1, col2, col3 = st.columns(3)
-col1.metric("Predicted cases", f"{city_row['predicted_cases']:,.0f}")
-if mode == "Current forecast":
-    col2.metric("95% CI", f"{city_row['lower_95']:,.0f} – {city_row['upper_95']:,.0f}")
-else:
-    col2.metric("Actual cases", f"{city_row['casos_est']:,.0f}")
-col3.metric("Epidemic probability", f"{city_row['epidemic_proba']:.0%}")
-
-st.markdown(
-    f"### {recs['emoji']} {recs['label']}\n*{recs['description']}*",
-)
-rec_cols = st.columns(len(recs["recommendations"]))
-for col, (category, items) in zip(rec_cols, recs["recommendations"].items()):
-    with col:
-        st.markdown(f"**{category}**")
-        for item in items:
-            st.markdown(f"- {item}")
+with stats_col:
+    st.markdown(f"#### {selected_city}")
+    st.metric("Predicted cases", f"{city_row['predicted_cases']:,.0f}")
+    if is_forecast_mode:
+        st.metric("95% CI", f"{city_row['lower_95']:,.0f} – {city_row['upper_95']:,.0f}")
+    else:
+        st.metric("Actual cases", f"{city_row['casos_est']:,.0f}")
+    st.metric("Epidemic probability", f"{city_row['epidemic_proba']:.0%}")
 
 # ── Trend chart: last 3 years + last year highlighted + forecast/backtest ──
 st.subheader(f"{selected_city} — quarterly trend")
 
-if mode == "Current forecast":
+if is_forecast_mode:
     forecast_year = forecast_df[forecast_df["city_name"] == selected_city]["forecast_quarter"].dt.year.min()
     city_forecast = forecast_df[forecast_df["city_name"] == selected_city].sort_values("forecast_quarter")
     x_categories = [QUARTER_LABELS[d.month] for d in city_forecast["forecast_quarter"]]
@@ -191,7 +245,7 @@ for years_back in (3, 2, 1):
         opacity=1.0 if years_back == 1 else 0.5,
     ))
 
-if mode == "Current forecast":
+if is_forecast_mode:
     fig_trend.add_trace(go.Scatter(
         x=x_categories, y=city_forecast["predicted_cases"],
         mode="lines+markers", name=f"{forecast_year} forecast",
@@ -220,3 +274,13 @@ fig_trend.update_layout(
     height=420, legend=dict(orientation="h", yanchor="bottom", y=1.02),
 )
 st.plotly_chart(fig_trend, width="stretch")
+
+# ── Risk tier badge + decision-support recommendations (below the charts) ──
+recs = get_recommendations()[risk_tier]
+st.markdown(f"### {recs['emoji']} {recs['label']}\n*{recs['description']}*")
+rec_cols = st.columns(len(recs["recommendations"]))
+for col, (category, items) in zip(rec_cols, recs["recommendations"].items()):
+    with col:
+        st.markdown(f"**{category}**")
+        for item in items:
+            st.markdown(f"- {item}")
