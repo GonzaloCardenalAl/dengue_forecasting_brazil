@@ -440,115 +440,115 @@ def plot_forecast_year_over_year_frames(
 
 
 def plot_validation_rollout(
-    period_labels: list[str],
-    lead_in_actual: pd.DataFrame,
-    true_values: pd.DataFrame,
+    city: str,
+    actual: pd.DataFrame,
+    lead_in_oof: pd.DataFrame,
     predicted: pd.DataFrame,
+    date_col: str,
     lead_in_year: int,
     validation_year: int,
     outputs_dir: Path | str,
     filename: str = "validation_rollout.png",
     reveal_n: int | None = None,
-    ylim_by_city: dict | None = None,
+    ylim: tuple[float, float] | None = None,
 ) -> None:
     """
-    Validation twin of plot_forecast_year_over_year: instead of an unknown
-    future forecast, `validation_year` is a year whose true outcome is
-    already known (e.g. the most recent outer CV fold's test year), so the
-    same autoregressive rollout used in production can be checked directly
-    against reality as its horizon (and calibrated CI) widens.
+    Single-city, continuous-timeline validation figure: `validation_year` is
+    a year whose true outcome is already known (e.g. the most recent outer
+    CV fold's test year), so the same autoregressive rollout used in
+    production can be checked directly against reality as its horizon (and
+    calibrated CI) widens. Unlike plot_forecast_year_over_year's
+    period-of-year overlay, the x-axis here is a real two-year timeline
+    (`lead_in_year` followed by `validation_year`) so it reads as one
+    chronological series, not two years stacked on the same 12 ticks.
 
-    - `lead_in_actual` (city_name, x_pos, value): real cases for
-      `lead_in_year`, blue dotted, no CI -- calm backdrop with no
-      compounding error since it isn't a multi-step rollout.
-    - `true_values` (city_name, x_pos, value): real cases for
-      `validation_year` itself, black solid, no CI -- always shown in full
-      (like `lead_in_actual`) since the point is to compare the rollout
-      against a known answer, not to hide it.
-    - `predicted` (city_name, x_pos, value, lower_95, upper_95): the
-      autoregressive rollout's own prediction for `validation_year` (see
-      validation/autoregressive_cv.run_autoregressive_cv), red dashed with
-      its horizon-bucketed CI -- the only series `reveal_n` truncates.
-
-    `reveal_n`/`ylim_by_city`: see plot_forecast_year_over_year.
+    - `actual` (`date_col`, value): real cases spanning both `lead_in_year`
+      and `validation_year`, black solid, no CI -- always shown in full
+      since the point is to compare the rollout against a known answer.
+    - `lead_in_oof` (`date_col`, value): the model's ordinary one-step
+      (non-autoregressive, real-lag) out-of-fold prediction for
+      `lead_in_year` only -- shows how the model performs when it isn't
+      compounding its own errors, as contrast against the rollout.
+    - `predicted` (`date_col`, value, lower_95, upper_95, x_pos): the
+      autoregressive rollout's own prediction for `validation_year` only
+      (see validation/autoregressive_cv.run_autoregressive_cv), red dashed
+      with its horizon-bucketed CI -- the only series `reveal_n` truncates
+      (via `x_pos`, the rollout's own 1..N step count).
     """
-    fig, axes = plt.subplots(2, 2, figsize=(14, 8))
-    axes = axes.flatten()
-    for ax, city in zip(axes, CITIES):
-        la = lead_in_actual[lead_in_actual[CITY_COL] == city].sort_values("x_pos")
-        tv = true_values[true_values[CITY_COL] == city].sort_values("x_pos")
-        pr = predicted[predicted[CITY_COL] == city].sort_values("x_pos")
-        if reveal_n is not None:
-            pr = pr[pr["x_pos"] <= reveal_n]
+    fig, ax = plt.subplots(figsize=(11, 5))
 
-        ax.plot(
-            la["x_pos"], _log_floor(la["value"]), color="blue", linestyle=":",
-            marker="o", ms=4, label=f"{lead_in_year} Actual",
-        )
-        ax.plot(
-            tv["x_pos"], _log_floor(tv["value"]), color="black", linestyle="-",
-            marker="o", ms=4, label=f"{validation_year} Actual (true)",
-        )
+    pr = predicted if reveal_n is None else predicted[predicted["x_pos"] <= reveal_n]
 
-        has_ci = {"lower_95", "upper_95"}.issubset(pr.columns) and pr["lower_95"].notna().any()
-        if has_ci:
-            ax.fill_between(
-                pr["x_pos"], _log_floor(pr["lower_95"]), _log_floor(pr["upper_95"]),
-                alpha=0.2, color="red",
-            )
-        ax.plot(
-            pr["x_pos"], _log_floor(pr["value"]), color="red", linestyle="--",
-            marker="o", ms=4, label=f"{validation_year} Predicted (autoregressive)",
-        )
-
-        ax.set_xticks(range(1, len(period_labels) + 1))
-        ax.set_xticklabels(period_labels)
-        ax.set_xlim(0.5, len(period_labels) + 0.5)
-        if ylim_by_city is not None and city in ylim_by_city:
-            ax.set_ylim(*ylim_by_city[city])
-        ax.set_yscale("log")
-        ax.set_title(city)
-        ax.set_ylabel("Estimated cases (log scale)")
-        ax.legend(fontsize=8)
-    fig.suptitle(
-        f"{validation_year} autoregressive rollout vs. true values (lead-in: {lead_in_year})",
-        fontsize=13,
+    ax.plot(
+        actual[date_col], _log_floor(actual["value"]), color="black", linestyle="-",
+        marker="o", ms=3, label=f"Actual ({lead_in_year}–{validation_year})",
     )
+    ax.plot(
+        lead_in_oof[date_col], _log_floor(lead_in_oof["value"]), color="blue", linestyle="--",
+        marker="o", ms=3, label=f"{lead_in_year} OOF prediction (non-autoregressive)",
+    )
+
+    has_ci = {"lower_95", "upper_95"}.issubset(pr.columns) and pr["lower_95"].notna().any()
+    if has_ci:
+        ax.fill_between(
+            pr[date_col], _log_floor(pr["lower_95"]), _log_floor(pr["upper_95"]),
+            alpha=0.2, color="red", label="95% CI (autoregressive)",
+        )
+    ax.plot(
+        pr[date_col], _log_floor(pr["value"]), color="red", linestyle="--",
+        marker="o", ms=4, label=f"{validation_year} Predicted (autoregressive)",
+    )
+
+    ax.axvline(pd.Timestamp(f"{validation_year}-01-01"), color="gray", linestyle=":", linewidth=1)
+    if ylim is not None:
+        ax.set_ylim(*ylim)
+    ax.set_yscale("log")
+    ax.set_title(f"{city} — {validation_year} autoregressive rollout vs. true values", fontsize=12)
+    ax.set_ylabel("Estimated cases (log scale)")
+    ax.legend(fontsize=8, loc="upper left")
     fig.tight_layout()
     _savefig_into(outputs_dir, filename, fig)
 
 
 def plot_validation_rollout_frames(
-    period_labels: list[str],
-    lead_in_actual: pd.DataFrame,
-    true_values: pd.DataFrame,
+    city: str,
+    actual: pd.DataFrame,
+    lead_in_oof: pd.DataFrame,
     predicted: pd.DataFrame,
+    date_col: str,
     lead_in_year: int,
     validation_year: int,
     outputs_dir: Path | str,
     frame_duration_ms: int = 600,
 ) -> None:
     """
-    GIF twin of plot_validation_rollout: one frame per validation period,
-    each revealing one more point of `predicted` than the last;
-    `lead_in_actual`/`true_values` are static across every frame. Same
-    fixed-per-city-y-axis + Pillow assembly as
-    plot_forecast_year_over_year_frames.
+    GIF twin of plot_validation_rollout: one frame per rollout step
+    (`predicted`'s `x_pos`), each revealing one more point than the last;
+    `actual`/`lead_in_oof` are static across every frame. Y-axis is fixed
+    across every frame (same min/max as plot_forecast_year_over_year_frames'
+    `_city_ylim`, just for this single city/series set) so the GIF doesn't
+    rescale as points are added.
     """
     from PIL import Image
 
     fig_dir = Path(outputs_dir)
     fig_dir.mkdir(parents=True, exist_ok=True)
-    ylim_by_city = {
-        city: _city_ylim(lead_in_actual, true_values, predicted, city) for city in CITIES
-    }
 
+    cols = ["value", "lower_95", "upper_95"]
+    vals = pd.concat(
+        [actual["value"], lead_in_oof["value"], *[predicted[c] for c in cols if c in predicted.columns]],
+        ignore_index=True,
+    ).dropna()
+    vals = _log_floor(vals)
+    ylim = (float(vals.min()) * 0.8, float(vals.max()) * 1.25)
+
+    n_steps = int(predicted["x_pos"].max())
     frame_paths = []
-    for i in range(1, len(period_labels) + 1):
+    for i in range(1, n_steps + 1):
         fname = f"frame_{i:02d}.png"
         plot_validation_rollout(
-            period_labels, lead_in_actual, true_values, predicted, lead_in_year, validation_year,
-            outputs_dir=outputs_dir, filename=fname, reveal_n=i, ylim_by_city=ylim_by_city,
+            city, actual, lead_in_oof, predicted, date_col, lead_in_year, validation_year,
+            outputs_dir=outputs_dir, filename=fname, reveal_n=i, ylim=ylim,
         )
         frame_paths.append(fig_dir / fname)
 
