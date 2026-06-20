@@ -56,9 +56,11 @@ def forecast_sarima(
     Returns (point_forecast, lower_95, upper_95) in log1p scale.
     Caller applies np.expm1 to convert to original scale.
     """
-    pred = fit_result.get_forecast(steps=horizon, exog=exog)
-    mean = pred.predicted_mean.values
-    ci   = pred.conf_int(alpha=alpha).values  # shape (horizon, 2)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        pred = fit_result.get_forecast(steps=horizon, exog=exog)
+        mean = pred.predicted_mean.values
+        ci   = pred.conf_int(alpha=alpha).values  # shape (horizon, 2)
     return mean, ci[:, 0], ci[:, 1]
 
 

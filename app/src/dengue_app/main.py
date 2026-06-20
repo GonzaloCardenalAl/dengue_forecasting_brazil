@@ -1,15 +1,37 @@
-from fastapi import FastAPI, HTTPException, Query
+import os
+
+from dotenv import load_dotenv
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 
 from dengue_app import data
 from dengue_app.city_coords import CITY_COORDS
 from dengue_app.risk import RECOMMENDATIONS
 
+load_dotenv()
+
 app = FastAPI(title="DORA API", description="Dengue Outbreak Response Assistant")
+
+ADMIN_TOKEN = os.environ.get("DENGUE_ADMIN_TOKEN")
+
+
+def _check_admin_token(x_admin_token: str | None = Header(default=None)) -> None:
+    if not ADMIN_TOKEN or x_admin_token != ADMIN_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid or missing admin token.")
 
 
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post("/admin/refresh")
+def admin_refresh(_: None = Depends(_check_admin_token)) -> dict:
+    """Fetch the latest InfoDengue data and regenerate the forecast using the
+    currently-served model (no retraining)."""
+    try:
+        return data.refresh_and_reforecast()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 def _validate_city(city: str | None) -> None:

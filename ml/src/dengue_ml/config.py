@@ -27,13 +27,23 @@ CITY_COL = "city_name"
 
 CITIES = ["Vitória", "Belo Horizonte", "Rio de Janeiro", "São Paulo"]
 
-# ── Reporting lag: weeks whose end date is within 13 weeks of the data pull
-# are considered potentially unreliable. Set to the last week that had
-# sufficient time to converge. Data runs through 2025-12-28 (the raw CSV's
-# literal last week); pulled mid-2026 so by then every available week already
-# has far more than the ~13-week convergence lag -- nothing needs dropping.
-# Update this constant when refreshing the dataset.
-MAX_RELIABLE_WEEK = pd.Timestamp("2025-12-28")
+# ── Reporting lag: weeks whose end date is within ~13 weeks of "now" are
+# considered potentially unreliable (InfoDengue's nowcast model hasn't
+# converged yet, so casos_est would still be revised upward later). Computed
+# dynamically off wall-clock time -- not the raw CSV's own max date -- so
+# refreshing the CSV (see data_refresh.py) never requires touching this.
+_RELIABILITY_LAG_WEEKS = 13
+
+
+def compute_max_reliable_week(now: pd.Timestamp | None = None) -> pd.Timestamp:
+    """Latest week-start considered safe for training/eval/inference: now
+    minus the ~13-week InfoDengue nowcast convergence lag, snapped back to
+    the most recent Sunday (this dataset's week-start convention -- every
+    data_iniSE value in the raw CSV is a Sunday)."""
+    if now is None:
+        now = pd.Timestamp.now()
+    cutoff = now - pd.Timedelta(weeks=_RELIABILITY_LAG_WEEKS)
+    return cutoff - pd.Timedelta(days=(cutoff.dayofweek + 1) % 7)
 
 # ── Forecasting / CV settings (sourced from configs/model_training.yaml) ──────
 FORECAST_HORIZON = _tcfg["cv"]["forecast_horizon"]  # weeks ahead

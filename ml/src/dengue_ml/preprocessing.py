@@ -3,7 +3,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from dengue_ml.config import (
-    DATE_COL, CITY_COL, TARGET, MAX_RELIABLE_WEEK,
+    DATE_COL, CITY_COL, TARGET, compute_max_reliable_week,
     DENGUE_FILE, SST_FILE, RONI_FILE,
 )
 from dengue_ml.data_loading import load_dengue_data, load_sst_data, load_roni_data
@@ -83,7 +83,7 @@ def prepare_weekly_table(
 
     df["week_start"] = df[DATE_COL]
     if apply_reliability_cutoff:
-        df = df[df["week_start"] <= MAX_RELIABLE_WEEK].copy()
+        df = df[df["week_start"] <= compute_max_reliable_week()].copy()
 
     df = df.sort_values([CITY_COL, "week_start"])
     # InfoDengue's own documented orange-alert criterion: Rt>1 sustained for

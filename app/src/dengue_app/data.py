@@ -5,13 +5,16 @@ ml/results/, reusing dengue_ml's own path/aggregation helpers rather than
 re-implementing them here.
 """
 
+import os
 from functools import lru_cache
 from pathlib import Path
 
 import pandas as pd
 from fastapi import HTTPException
 
-from dengue_ml.config import CITY_COL
+from dengue_ml.config import CITY_COL, DENGUE_FILE
+from dengue_ml.data_refresh import refresh_dengue_data
+from dengue_ml.forecasting.pipeline import run_inference
 from dengue_ml.forecasting.quarterly_aggregation import (
     aggregate_weekly_classifier_to_quarterly,
     aggregate_weekly_history_to_quarterly,
@@ -38,15 +41,32 @@ def _read_csv(filename: str, parse_dates: list[str] | None = None) -> pd.DataFra
 
 
 @lru_cache(maxsize=1)
-def _history_quarterly_cached(run_dir_key: str) -> pd.DataFrame:
+def _history_quarterly_cached(run_dir_key: str, raw_csv_mtime: float) -> pd.DataFrame:
     weekly = prepare_model_table()
     return aggregate_weekly_history_to_quarterly(weekly)
 
 
 def load_history_quarterly() -> pd.DataFrame:
     """Actual quarterly case counts (city_name, quarter_start, casos_est, ...).
-    Cached per run dir -- recomputed only when a new pipeline run completes."""
-    return _history_quarterly_cached(str(get_run_dir()))
+    Cached per (run dir, raw CSV mtime) -- recomputed when a new pipeline run
+    completes OR the raw CSV is refreshed in place (see refresh_and_reforecast)."""
+    return _history_quarterly_cached(str(get_run_dir()), os.path.getmtime(DENGUE_FILE))
+
+
+def refresh_and_reforecast() -> dict:
+    """Fetch the latest InfoDengue data and re-run inference (NOT retraining)
+    with whatever model is currently in the latest run dir. Called by the
+    /admin/refresh endpoint."""
+    refresh_summary = refresh_dengue_data()
+    run_dir = get_run_dir()
+    _weekly_df, quarterly_df = run_inference(run_dir)
+    return {
+        **refresh_summary,
+        "model_name": quarterly_df["model_name"].iloc[0] if not quarterly_df.empty else None,
+        "forecast_quarters": sorted(
+            quarterly_df["forecast_quarter"].dt.strftime("%Y-%m-%d").unique().tolist()
+        ),
+    }
 
 
 def load_quarterly_forecast() -> pd.DataFrame:
