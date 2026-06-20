@@ -222,8 +222,10 @@ def aggregate_weekly_oof_predictions_to_quarterly(
 def aggregate_weekly_history_to_quarterly(weekly_df: pd.DataFrame) -> pd.DataFrame:
     """
     Roll up a weekly historical table (output of `prepare_model_table`) to
-    quarterly sums of casos_est/casos_est_min/casos_est_max, for plotting the
-    quarterly deliverable's forecast against quarterly-aggregated history.
+    quarterly sums of casos_est/casos_est_min/casos_est_max/p_inc100k, for
+    plotting the quarterly deliverable's forecast against
+    quarterly-aggregated history (p_inc100k -- incidence per 100k -- lets
+    the dashboard compare cities of very different population sizes).
     """
     df = weekly_df.copy()
     df["quarter_start"] = pd.PeriodIndex(df["week_start"], freq="Q").to_timestamp()
@@ -234,6 +236,7 @@ def aggregate_weekly_history_to_quarterly(weekly_df: pd.DataFrame) -> pd.DataFra
             casos_est=("casos_est", "sum"),
             casos_est_min=("casos_est_min", "sum"),
             casos_est_max=("casos_est_max", "sum"),
+            p_inc100k=("p_inc100k", "sum"),
         )
         .reset_index()
     )

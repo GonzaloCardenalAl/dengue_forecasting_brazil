@@ -41,7 +41,11 @@ def _validate_city(city: str | None) -> None:
 
 @app.get("/cities")
 def cities() -> list[dict]:
-    return [{"city_name": name, **coords} for name, coords in CITY_COORDS.items()]
+    pop_by_city = data.load_city_population()
+    return [
+        {"city_name": name, **coords, "population": pop_by_city.get(name)}
+        for name, coords in CITY_COORDS.items()
+    ]
 
 
 @app.get("/risk/recommendations")
@@ -100,3 +104,12 @@ def history_quarterly(
         df = df[df["city_name"] == city]
     df = data.filter_by_date_range(df, "quarter_start", start, end)
     return data.records(df.sort_values(["city_name", "quarter_start"]))
+
+
+@app.get("/history/seasonal-profile")
+def history_seasonal_profile(city: str | None = Query(default=None)) -> list[dict]:
+    """Per-season (Q4->Q1->Q2->Q3) summed incidence per city, for the annual
+    quarterly-profile chart. is_epidemic_season flags seasons containing any
+    nivel_inc==2 week."""
+    _validate_city(city)
+    return data.records(data.load_seasonal_profile(city))

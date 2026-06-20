@@ -9,6 +9,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from fastapi import HTTPException
 
@@ -41,9 +42,21 @@ def _read_csv(filename: str, parse_dates: list[str] | None = None) -> pd.DataFra
 
 
 @lru_cache(maxsize=1)
+def _weekly_table_cached(run_dir_key: str, raw_csv_mtime: float) -> pd.DataFrame:
+    """Shared cache for `prepare_model_table()` -- everything below keys off
+    the same (run dir, raw CSV mtime) pair, so one cache entry covers
+    history, seasonal profile, and population instead of re-reading the raw
+    CSVs once per consumer."""
+    return prepare_model_table()
+
+
+def _weekly_table() -> pd.DataFrame:
+    return _weekly_table_cached(str(get_run_dir()), os.path.getmtime(DENGUE_FILE))
+
+
+@lru_cache(maxsize=1)
 def _history_quarterly_cached(run_dir_key: str, raw_csv_mtime: float) -> pd.DataFrame:
-    weekly = prepare_model_table()
-    return aggregate_weekly_history_to_quarterly(weekly)
+    return aggregate_weekly_history_to_quarterly(_weekly_table_cached(run_dir_key, raw_csv_mtime))
 
 
 def load_history_quarterly() -> pd.DataFrame:
@@ -51,6 +64,47 @@ def load_history_quarterly() -> pd.DataFrame:
     Cached per (run dir, raw CSV mtime) -- recomputed when a new pipeline run
     completes OR the raw CSV is refreshed in place (see refresh_and_reforecast)."""
     return _history_quarterly_cached(str(get_run_dir()), os.path.getmtime(DENGUE_FILE))
+
+
+@lru_cache(maxsize=1)
+def _seasonal_profile_cached(run_dir_key: str, raw_csv_mtime: float) -> pd.DataFrame:
+    """Per-(city, season) summed incidence, grouped Q4->Q1->Q2->Q3 instead of
+    calendar-year so each season's case rise-and-fall arc plots as one
+    unbroken line (see ml/notebooks figure 09 this mirrors). Local to this
+    chart -- doesn't reintroduce a global epidemic-year concept elsewhere."""
+    df = _weekly_table_cached(run_dir_key, raw_csv_mtime).copy()
+    quarter_of_year = df["week_start"].dt.quarter
+    df["season_year"] = np.where(quarter_of_year >= 4, df["week_start"].dt.year, df["week_start"].dt.year - 1)
+    df["season_quarter_pos"] = quarter_of_year.map({4: 1, 1: 2, 2: 3, 3: 4})
+
+    agg = (
+        df.groupby([CITY_COL, "season_year", "season_quarter_pos"], sort=True)
+        .agg(p_inc100k=("p_inc100k", "sum"), any_epidemic_week=("nivel_inc", lambda s: (s == 2).any()))
+        .reset_index()
+    )
+    is_epidemic_season = (
+        agg.groupby([CITY_COL, "season_year"])["any_epidemic_week"].any().rename("is_epidemic_season")
+    )
+    return agg.merge(is_epidemic_season, on=[CITY_COL, "season_year"]).drop(columns="any_epidemic_week")
+
+
+def load_seasonal_profile(city: str | None = None) -> pd.DataFrame:
+    """Annual quarterly profile (city_name, season_year, season_quarter_pos,
+    p_inc100k, is_epidemic_season) for the Q4->Q1->Q2->Q3 seasonal chart.
+    Cached the same way as load_history_quarterly()."""
+    df = _seasonal_profile_cached(str(get_run_dir()), os.path.getmtime(DENGUE_FILE))
+    if city is not None:
+        df = df[df[CITY_COL] == city]
+    return df.sort_values([CITY_COL, "season_year", "season_quarter_pos"]).reset_index(drop=True)
+
+
+def load_city_population() -> dict[str, float]:
+    """Latest known population per city (pop is slowly-varying in the raw
+    weekly data, so the most recent value is a fine stand-in for "current").
+    Used to convert forecasted case counts to incidence per 100k, since the
+    forecast pipeline itself only outputs raw case counts."""
+    weekly = _weekly_table()
+    return weekly.sort_values("week_start").groupby(CITY_COL)["pop"].last().to_dict()
 
 
 def refresh_and_reforecast() -> dict:
