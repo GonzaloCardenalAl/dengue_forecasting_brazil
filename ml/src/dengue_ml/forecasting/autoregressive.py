@@ -88,6 +88,19 @@ def _autoregressive_loop(
     _estimate_rt_lookup; the final pass only uses rows_df.
     """
     history = latest_df.copy()
+    # Belt-and-suspenders cap on what gets fed back as a future lag feature,
+    # independent of any model-side safeguard (e.g. xrfm_models.py's z-score
+    # clip) -- bounds the input to next week's lag computation so one
+    # model's occasional bad extrapolation can't compound across the
+    # remaining horizon. Relative to each city's own observed history rather
+    # than a fixed constant, and generous (10x) since it's only meant to
+    # rule out pure runaway, not constrain ordinary forecast variance. Only
+    # the fed-back copy is capped -- the reported predicted_cases for the
+    # week itself is left untouched.
+    feedback_cap = {
+        city: max(float(latest_df.loc[latest_df[CITY_COL] == city, TARGET].max()), 1.0) * 10
+        for city in CITIES
+    }
     rows = []
     for w in future_ws:
         # Build feature row for this future week
@@ -154,7 +167,7 @@ def _autoregressive_loop(
 
             # Append prediction to history for next-step lag computation
             stub_row = stubs[stubs[CITY_COL] == city].copy()
-            stub_row[TARGET] = preds[i]
+            stub_row[TARGET] = min(preds[i], feedback_cap[city])
             history = pd.concat([history, stub_row], ignore_index=True)
 
     return pd.DataFrame(rows), history

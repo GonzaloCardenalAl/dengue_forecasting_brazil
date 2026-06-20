@@ -559,6 +559,107 @@ def plot_validation_rollout_frames(
     )
 
 
+def plot_validation_rollout_grid(
+    cities: list[str],
+    actual: pd.DataFrame,
+    lead_in_oof: pd.DataFrame,
+    predicted: pd.DataFrame,
+    date_col: str,
+    lead_in_year: int,
+    validation_year: int,
+    outputs_dir: Path | str,
+    filename: str = "validation_rollout_grid.png",
+    reveal_n: int | None = None,
+    ylim_by_city: dict | None = None,
+) -> None:
+    """
+    All-cities twin of plot_validation_rollout: same continuous-timeline,
+    three-series-per-panel design, one panel per city in a 2x2 grid instead
+    of a single standalone figure. `actual`/`lead_in_oof`/`predicted` carry
+    `CITY_COL` so each panel can filter down to its own city.
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(14, 8))
+    axes = axes.flatten()
+    for ax, city in zip(axes, cities):
+        a = actual[actual[CITY_COL] == city].sort_values(date_col)
+        lo = lead_in_oof[lead_in_oof[CITY_COL] == city].sort_values(date_col)
+        pr = predicted[predicted[CITY_COL] == city].sort_values(date_col)
+        if reveal_n is not None:
+            pr = pr[pr["x_pos"] <= reveal_n]
+
+        ax.plot(
+            a[date_col], _log_floor(a["value"]), color="black", linestyle="-",
+            marker="o", ms=3, label=f"Actual ({lead_in_year}–{validation_year})",
+        )
+        ax.plot(
+            lo[date_col], _log_floor(lo["value"]), color="blue", linestyle="--",
+            marker="o", ms=3, label=f"{lead_in_year} OOF prediction (non-autoregressive)",
+        )
+
+        has_ci = {"lower_95", "upper_95"}.issubset(pr.columns) and pr["lower_95"].notna().any()
+        if has_ci:
+            ax.fill_between(
+                pr[date_col], _log_floor(pr["lower_95"]), _log_floor(pr["upper_95"]),
+                alpha=0.2, color="red", label="95% CI (autoregressive)",
+            )
+        ax.plot(
+            pr[date_col], _log_floor(pr["value"]), color="red", linestyle="--",
+            marker="o", ms=4, label=f"{validation_year} Predicted (autoregressive)",
+        )
+
+        ax.axvline(pd.Timestamp(f"{validation_year}-01-01"), color="gray", linestyle=":", linewidth=1)
+        if ylim_by_city is not None and city in ylim_by_city:
+            ax.set_ylim(*ylim_by_city[city])
+        ax.set_yscale("log")
+        ax.set_title(city)
+        ax.set_ylabel("Estimated cases (log scale)")
+        ax.legend(fontsize=7)
+    fig.suptitle(
+        f"{validation_year} autoregressive rollout vs. true values (lead-in {lead_in_year})",
+        fontsize=13,
+    )
+    fig.tight_layout()
+    _savefig_into(outputs_dir, filename, fig)
+
+
+def plot_validation_rollout_grid_frames(
+    cities: list[str],
+    actual: pd.DataFrame,
+    lead_in_oof: pd.DataFrame,
+    predicted: pd.DataFrame,
+    date_col: str,
+    lead_in_year: int,
+    validation_year: int,
+    outputs_dir: Path | str,
+    frame_duration_ms: int = 600,
+) -> None:
+    """
+    GIF twin of plot_validation_rollout_grid: same per-city fixed y-axis
+    (`_city_ylim`) and Pillow assembly as plot_forecast_year_over_year_frames.
+    """
+    from PIL import Image
+
+    fig_dir = Path(outputs_dir)
+    fig_dir.mkdir(parents=True, exist_ok=True)
+    ylim_by_city = {city: _city_ylim(actual, lead_in_oof, predicted, city) for city in cities}
+
+    n_steps = int(predicted["x_pos"].max())
+    frame_paths = []
+    for i in range(1, n_steps + 1):
+        fname = f"frame_{i:02d}.png"
+        plot_validation_rollout_grid(
+            cities, actual, lead_in_oof, predicted, date_col, lead_in_year, validation_year,
+            outputs_dir=outputs_dir, filename=fname, reveal_n=i, ylim_by_city=ylim_by_city,
+        )
+        frame_paths.append(fig_dir / fname)
+
+    frames = [Image.open(p) for p in frame_paths]
+    frames[0].save(
+        fig_dir / "forecast.gif", save_all=True, append_images=frames[1:],
+        duration=frame_duration_ms, loop=0,
+    )
+
+
 def plot_horizon_widening_example(
     fold_predictions_ar: pd.DataFrame,
     model_name: str,

@@ -207,3 +207,78 @@ def select_best_model(fold_metrics: pd.DataFrame) -> tuple[str, float]:
     tied = avg_rank[avg_rank == avg_rank.min()].index
     best = summary.loc[tied, "median"].idxmin()
     return best, float(summary.loc[best, "median"])
+
+
+def _mae_rank(fold_metrics: pd.DataFrame) -> pd.Series:
+    """Shared half of select_best_model's ranking: avg rank of median+std MAE per model."""
+    summary = fold_metrics.groupby("model")["mae"].agg(["median", "std"])
+    return (summary["median"].rank() + summary["std"].rank()) / 2
+
+
+def select_best_model_with_ar_stability(
+    fold_metrics: pd.DataFrame,
+    fold_predictions_ar: pd.DataFrame | None = None,
+) -> tuple[str, dict]:
+    """
+    Autoregressive-rollout-aware counterpart of select_best_model. 1-step
+    nested CV (what select_best_model ranks on) always feeds the model real
+    historical lags, so it never tests what happens once the model's own
+    predictions get fed back as next-step lag features during the real
+    52-week production rollout (forecasting/autoregressive.py) -- a failure
+    mode some model families (observed: xrfm's kernel/AGOP machinery) are
+    much more exposed to than others (xgboost's trees).
+
+    fold_predictions_ar (validation/autoregressive_cv.run_autoregressive_cv's
+    output) already covers every xgb/xrfm candidate regardless of which one
+    wins 1-step selection (see AR_CV_MODEL_NAMES), so no extra CV run is
+    needed here -- just a second ranking from data that already exists.
+
+    Combines, with equal weight, the existing 1-step rank (median+std MAE
+    rank, across every model in fold_metrics) with the same ranking computed
+    from the autoregressive rollout's own residuals. Models with no AR
+    coverage (baseline/sarima -- no feedback loop, see AR_CV_MODEL_NAMES'
+    docstring) get the worst possible AR rank rather than being dropped or
+    given a free pass, so missing evidence can't let them win on a
+    technicality.
+
+    fold_predictions_ar=None/empty falls back to select_best_model's 1-step-
+    only behavior (keeps older run dirs, from before this validation step
+    existed, working unmodified).
+
+    Returns (best_model_name, diagnostics) where diagnostics has per-model
+    median/std MAE for both 1-step and AR, plus both ranks and the combined
+    rank -- for transparent printing of *why* a model won.
+    """
+    from dengue_ml.validation.metrics import compute_fold_metrics
+    from dengue_ml.validation.autoregressive_cv import AR_CV_MODEL_NAMES
+
+    if fold_predictions_ar is None or fold_predictions_ar.empty:
+        best, best_mae = select_best_model(fold_metrics)
+        return best, {"median_mae_1step": best_mae}
+
+    rank_1step = _mae_rank(fold_metrics)
+    ar_fold_metrics = compute_fold_metrics(fold_predictions_ar)
+    rank_ar = _mae_rank(ar_fold_metrics).reindex(rank_1step.index)
+    # No AR coverage (baseline/sarima) -> worst possible AR rank, not NaN.
+    rank_ar = rank_ar.fillna(len(rank_1step) + 1)
+
+    combined_rank = (rank_1step + rank_ar) / 2
+    tied = combined_rank[combined_rank == combined_rank.min()].index
+
+    ar_median = ar_fold_metrics.groupby("model")["mae"].median().reindex(tied)
+    step_median = fold_metrics.groupby("model")["mae"].median().reindex(tied)
+    # Tie-break by AR median MAE first (where available), then 1-step median.
+    best = pd.DataFrame({"ar": ar_median, "step": step_median}).sort_values(
+        ["ar", "step"], na_position="last"
+    ).index[0]
+
+    diagnostics = {
+        "median_mae_1step": float(fold_metrics.groupby("model")["mae"].median().loc[best]),
+        "std_mae_1step": float(fold_metrics.groupby("model")["mae"].std().loc[best]),
+        "rank_1step": float(rank_1step.loc[best]),
+        "median_mae_ar": float(ar_fold_metrics.groupby("model")["mae"].median().get(best, float("nan"))),
+        "std_mae_ar": float(ar_fold_metrics.groupby("model")["mae"].std().get(best, float("nan"))),
+        "rank_ar": float(rank_ar.loc[best]),
+        "combined_rank": float(combined_rank.loc[best]),
+    }
+    return best, diagnostics

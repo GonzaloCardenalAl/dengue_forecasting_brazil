@@ -210,39 +210,63 @@ if __name__ == "__main__":
         print(f"\nYear-over-year forecast deliverable (week/month/quarter + GIF frames) saved under "
               f"{run_dir / 'figures' / 'forecast'}/")
 
-        # Validation deliverable: a single city (VALIDATION_CITY), continuous
-        # two-year timeline (lead_in_year -> validation_year), for a year
-        # whose true outcome is already known -- validation_year is the most
-        # recent outer CV fold's test year. Shows the model's ordinary
-        # one-step OOF prediction for the calm lead-in year (real lags, no
-        # compounding error) alongside the actual autoregressive rollout for
+        # Validation deliverable: continuous two-year timeline
+        # (lead_in_year -> validation_year), for a year whose true outcome is
+        # already known -- validation_year is the most recent outer CV
+        # fold's test year. Shows the model's ordinary one-step OOF
+        # prediction for the calm lead-in year (real lags, no compounding
+        # error) alongside the actual autoregressive rollout for
         # validation_year (the model's own predictions feeding its lags, as
         # in real production use, with no peeking at validation_year's true
         # values) so the calibrated CI can be checked directly against
-        # reality as it widens with horizon. Falls back to skipping (no fold
-        # tests `prev_year` yet) rather than guessing a different year.
-        from dengue_ml.reporting.plots import plot_validation_rollout, plot_validation_rollout_frames
+        # reality as it widens with horizon. Built once for all 4 cities,
+        # then both an individual figure per INDIVIDUAL_VALIDATION_CITIES
+        # entry and one 4-panel grid covering every city are emitted from
+        # the same underlying data. Falls back to skipping (no fold tests
+        # `prev_year` yet) rather than guessing a different year.
+        from dengue_ml.reporting.plots import (
+            plot_validation_rollout, plot_validation_rollout_frames,
+            plot_validation_rollout_grid, plot_validation_rollout_grid_frames,
+        )
 
-        VALIDATION_CITY = "São Paulo"
+        INDIVIDUAL_VALIDATION_CITIES = ["São Paulo", "Rio de Janeiro"]
         validation_year = prev_year
         lead_in_year = validation_year - 1
         validation_fold = fold_predictions_ar[
             (fold_predictions_ar["model"] == model_name)
-            & (fold_predictions_ar["city_name"] == VALIDATION_CITY)
             & (fold_predictions_ar["week_start"].dt.year == validation_year)
         ].copy()
 
-        if VALIDATION_CITY not in CITIES:
-            print(f"\nSkipping validation deliverable -- VALIDATION_CITY={VALIDATION_CITY!r} "
-                  f"not in CITIES.")
-        elif validation_fold.empty:
+        if validation_fold.empty:
             print(f"\nSkipping {validation_year} validation deliverable -- no autoregressive "
                   f"CV fold tests {validation_year} yet.")
         else:
             validation_root = run_dir / "figures" / f"{validation_year}_validation"
 
+            def _emit_validation(city_list, actual, lead_in_oof, predicted, date_col, grain_dir):
+                for city in city_list:
+                    city_dir = grain_dir / city
+                    a = actual[actual[CITY_COL] == city].sort_values(date_col)
+                    lo = lead_in_oof[lead_in_oof[CITY_COL] == city].sort_values(date_col)
+                    pr = predicted[predicted[CITY_COL] == city].sort_values(date_col)
+                    plot_validation_rollout(
+                        city, a, lo, pr, date_col, lead_in_year, validation_year, outputs_dir=city_dir,
+                    )
+                    plot_validation_rollout_frames(
+                        city, a, lo, pr, date_col, lead_in_year, validation_year, outputs_dir=city_dir,
+                    )
+                grid_dir = grain_dir / "all_cities"
+                plot_validation_rollout_grid(
+                    CITIES, actual, lead_in_oof, predicted, date_col, lead_in_year, validation_year,
+                    outputs_dir=grid_dir,
+                )
+                plot_validation_rollout_grid_frames(
+                    CITIES, actual, lead_in_oof, predicted, date_col, lead_in_year, validation_year,
+                    outputs_dir=grid_dir,
+                )
+
             # ── Quarterly ──
-            q_pred = validation_fold.groupby("quarter_position").agg(
+            q_pred = validation_fold.groupby([CITY_COL, "quarter_position"]).agg(
                 value=("predicted", "sum"),
                 growth_proxy=("growth_proxy", "first"),
             ).reset_index().rename(columns={"quarter_position": "x_pos"})
@@ -256,27 +280,20 @@ if __name__ == "__main__":
             )
 
             q_actual = quarterly_history_df[
-                (quarterly_history_df[CITY_COL] == VALIDATION_CITY)
-                & (quarterly_history_df["quarter_start"].dt.year.isin([lead_in_year, validation_year]))
-            ].sort_values("quarter_start").rename(columns={"casos_est": "value"})
+                quarterly_history_df["quarter_start"].dt.year.isin([lead_in_year, validation_year])
+            ].rename(columns={"casos_est": "value"})
 
             q_lead_in_oof = quarterly_oof[
-                (quarterly_oof[CITY_COL] == VALIDATION_CITY)
-                & (quarterly_oof["quarter_start"].dt.year == lead_in_year)
-            ].sort_values("quarter_start").rename(columns={"predicted": "value"})
+                quarterly_oof["quarter_start"].dt.year == lead_in_year
+            ].rename(columns={"predicted": "value"})
 
-            quarterly_validation_dir = validation_root / "quarterly"
-            plot_validation_rollout(
-                VALIDATION_CITY, q_actual, q_lead_in_oof, q_pred, "quarter_start",
-                lead_in_year, validation_year, outputs_dir=quarterly_validation_dir,
-            )
-            plot_validation_rollout_frames(
-                VALIDATION_CITY, q_actual, q_lead_in_oof, q_pred, "quarter_start",
-                lead_in_year, validation_year, outputs_dir=quarterly_validation_dir,
+            _emit_validation(
+                INDIVIDUAL_VALIDATION_CITIES, q_actual, q_lead_in_oof, q_pred, "quarter_start",
+                validation_root / "quarterly",
             )
 
             # ── Monthly ──
-            m_pred = validation_fold.groupby("month_position").agg(
+            m_pred = validation_fold.groupby([CITY_COL, "month_position"]).agg(
                 value=("predicted", "sum"),
                 growth_proxy=("growth_proxy", "first"),
             ).reset_index().rename(columns={"month_position": "x_pos"})
@@ -290,23 +307,16 @@ if __name__ == "__main__":
             )
 
             m_actual = monthly_history_df[
-                (monthly_history_df[CITY_COL] == VALIDATION_CITY)
-                & (monthly_history_df["month_start"].dt.year.isin([lead_in_year, validation_year]))
-            ].sort_values("month_start").rename(columns={"casos_est": "value"})
+                monthly_history_df["month_start"].dt.year.isin([lead_in_year, validation_year])
+            ].rename(columns={"casos_est": "value"})
 
             m_lead_in_oof = monthly_oof[
-                (monthly_oof[CITY_COL] == VALIDATION_CITY)
-                & (monthly_oof["month_start"].dt.year == lead_in_year)
-            ].sort_values("month_start").rename(columns={"predicted": "value"})
+                monthly_oof["month_start"].dt.year == lead_in_year
+            ].rename(columns={"predicted": "value"})
 
-            monthly_validation_dir = validation_root / "monthly"
-            plot_validation_rollout(
-                VALIDATION_CITY, m_actual, m_lead_in_oof, m_pred, "month_start",
-                lead_in_year, validation_year, outputs_dir=monthly_validation_dir,
-            )
-            plot_validation_rollout_frames(
-                VALIDATION_CITY, m_actual, m_lead_in_oof, m_pred, "month_start",
-                lead_in_year, validation_year, outputs_dir=monthly_validation_dir,
+            _emit_validation(
+                INDIVIDUAL_VALIDATION_CITIES, m_actual, m_lead_in_oof, m_pred, "month_start",
+                validation_root / "monthly",
             )
 
             # ── Weekly ──
@@ -318,26 +328,18 @@ if __name__ == "__main__":
             w_pred["lower_95"], w_pred["upper_95"] = w_lower, w_upper
 
             w_actual = full_history_df[
-                (full_history_df[CITY_COL] == VALIDATION_CITY)
-                & (full_history_df["week_start"].dt.year.isin([lead_in_year, validation_year]))
-            ].sort_values("week_start").rename(columns={"casos_est": "value"})
+                full_history_df["week_start"].dt.year.isin([lead_in_year, validation_year])
+            ].rename(columns={"casos_est": "value"})
 
             w_lead_in_oof = weekly_oof[
-                (weekly_oof[CITY_COL] == VALIDATION_CITY)
-                & (weekly_oof["model"] == model_name)
-                & (weekly_oof["week_start"].dt.year == lead_in_year)
-            ].sort_values("week_start").rename(columns={"predicted": "value"})
+                (weekly_oof["model"] == model_name) & (weekly_oof["week_start"].dt.year == lead_in_year)
+            ].rename(columns={"predicted": "value"})
 
-            weekly_validation_dir = validation_root / "weekly"
-            plot_validation_rollout(
-                VALIDATION_CITY, w_actual, w_lead_in_oof, w_pred, "week_start",
-                lead_in_year, validation_year, outputs_dir=weekly_validation_dir,
-            )
-            plot_validation_rollout_frames(
-                VALIDATION_CITY, w_actual, w_lead_in_oof, w_pred, "week_start",
-                lead_in_year, validation_year, outputs_dir=weekly_validation_dir,
+            _emit_validation(
+                INDIVIDUAL_VALIDATION_CITIES, w_actual, w_lead_in_oof, w_pred, "week_start",
+                validation_root / "weekly",
             )
 
-            print(f"\n{validation_year} validation deliverable for {VALIDATION_CITY} "
-                  f"(week/month/quarter + GIF frames, lead-in {lead_in_year}) saved under "
-                  f"{validation_root}/")
+            print(f"\n{validation_year} validation deliverable (week/month/quarter + GIF frames, "
+                  f"lead-in {lead_in_year}) saved under {validation_root}/ -- individual figures for "
+                  f"{INDIVIDUAL_VALIDATION_CITIES} plus a 4-city grid under each grain's all_cities/.")

@@ -17,7 +17,7 @@ import pandas as pd
 
 from dengue_ml.run_dir import get_latest_run_dir
 from dengue_ml.preprocessing import prepare_model_table
-from dengue_ml.training.final_train import select_best_model
+from dengue_ml.training.final_train import select_best_model_with_ar_stability
 from dengue_ml.validation.autoregressive_cv import run_autoregressive_cv, AR_CV_MODEL_NAMES
 from dengue_ml.validation.conditional_residuals import compute_horizon_bucketed_quarterly_residual_quantile_table
 from dengue_ml.reporting.plots import plot_horizon_widening_example
@@ -50,8 +50,15 @@ if __name__ == "__main__":
     fold_predictions_ar.to_csv(run_dir / "fold_predictions_ar.csv", index=False)
     print(f"Saved {run_dir / 'fold_predictions_ar.csv'} ({len(fold_predictions_ar)} rows)")
 
-    best_model, best_mae = select_best_model(fold_metrics)
-    print(f"Best model (by avg rank of median + std MAE): {best_model}")
+    best_model, selection_info = select_best_model_with_ar_stability(fold_metrics, fold_predictions_ar)
+    if "median_mae_ar" in selection_info:
+        print(
+            f"Best model (1-step + autoregressive combined rank): {best_model}  "
+            f"(1-step median MAE = {selection_info['median_mae_1step']:.1f}, rank {selection_info['rank_1step']:.1f}; "
+            f"AR median MAE = {selection_info['median_mae_ar']:.1f}, rank {selection_info['rank_ar']:.1f})"
+        )
+    else:
+        print(f"Best model (by avg rank of median + std MAE): {best_model}")
 
     if best_model not in AR_CV_MODEL_NAMES:
         print(f"'{best_model}' has no autoregressive feedback loop (baseline/sarima) "

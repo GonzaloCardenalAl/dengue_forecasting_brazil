@@ -50,6 +50,19 @@ class _ScaledXRFM:
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
         X_scaled = self.scaler.transform(X.to_numpy(dtype="float32"))
+        # Clip to a fixed z-score range before the kernel ever sees it. The
+        # Laplace kernel/AGOP metric has no defined ceiling for inputs far
+        # outside the training distribution -- unlike XGBoost's trees, which
+        # can only ever output a value seen in some training leaf. This
+        # matters specifically during autoregressive rollouts: each step's
+        # prediction is fed back as next step's lag feature, so if a
+        # prediction drifts even slightly out of range, the next step's
+        # input drifts further, and a kernel without an extrapolation
+        # ceiling can compound that into an unbounded blowup (observed:
+        # predictions reaching ~10M cases against actuals in the hundreds).
+        # No-op for in-distribution data (normal nested CV, early rollout
+        # steps), since real features essentially never reach |z| = 5.
+        X_scaled = np.clip(X_scaled, -5.0, 5.0)
         return self.model.predict(X_scaled)
 
     @property

@@ -3,7 +3,7 @@
 import pandas as pd
 from dengue_ml.run_dir import get_latest_run_dir
 from dengue_ml.training.final_train import (
-    train_final_model, select_best_model, train_final_classifier, select_best_classifier,
+    train_final_model, select_best_model_with_ar_stability, train_final_classifier, select_best_classifier,
 )
 from dengue_ml.preprocessing import prepare_model_table
 from dengue_ml.reporting.plots import plot_feature_importance
@@ -28,8 +28,16 @@ if __name__ == "__main__":
     # this run dir. None -> artifact["horizon_quantiles"] stays None and the
     # production forecast just skips the parallel horizon-aware deliverable.
     fold_predictions_ar = pd.read_csv(fold_predictions_ar_path) if fold_predictions_ar_path.exists() else None
-    best_model, best_mae = select_best_model(fold_metrics)
-    print(f"Best model: {best_model}  (median MAE = {best_mae:.1f} cases)")
+    best_model, selection_info = select_best_model_with_ar_stability(fold_metrics, fold_predictions_ar)
+    if "median_mae_ar" in selection_info:
+        print(
+            f"Best model: {best_model}  "
+            f"(1-step median MAE = {selection_info['median_mae_1step']:.1f}, rank {selection_info['rank_1step']:.1f}; "
+            f"AR median MAE = {selection_info['median_mae_ar']:.1f}, rank {selection_info['rank_ar']:.1f}; "
+            f"combined rank = {selection_info['combined_rank']:.1f})"
+        )
+    else:
+        print(f"Best model: {best_model}  (median MAE = {selection_info['median_mae_1step']:.1f} cases)")
 
     df = prepare_model_table()
     artifact = train_final_model(
