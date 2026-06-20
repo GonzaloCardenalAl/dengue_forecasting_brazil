@@ -2,12 +2,15 @@ import numpy as np
 import pandas as pd
 
 from dengue_ml.config import CITY_COL
-from dengue_ml.validation.conditional_residuals import apply_residual_quantile_table
+from dengue_ml.validation.conditional_residuals import (
+    apply_residual_quantile_table, apply_horizon_bucketed_quantile_table,
+)
 
 
 def aggregate_weekly_forecast_to_quarterly(
     weekly_forecast_df: pd.DataFrame,
     quarterly_residual_quantiles: dict | None,
+    horizon_bucketed_quantiles: dict | None = None,
 ) -> pd.DataFrame:
     """
     Roll a 52-week-ahead forecast (output of `generate_next_52w_forecast`) up
@@ -18,12 +21,20 @@ def aggregate_weekly_forecast_to_quarterly(
 
     95% CI: NOT a sum of the weekly lower_95/upper_95 (statistically invalid
     -- see `compute_quarterly_residual_quantile_table`'s docstring). Instead,
-    apply the quarterly-residual-quantile calibration table (computed once
-    from nested-CV OOF data) to the summed point forecast, keyed off the
-    growth_proxy value at the first week of each quarter.
+    apply a calibration table to the summed point forecast, keyed off the
+    growth_proxy value at the first week of each quarter:
+
+    - `horizon_bucketed_quantiles` (from
+      `compute_horizon_bucketed_quarterly_residual_quantile_table`), if
+      given, takes priority -- it's keyed by quarter_position (1st/2nd/3rd/
+      4th quarter *of this forecast*, derived here by ranking
+      `forecast_quarter` per city since the forecast always covers exactly
+      4 consecutive quarters ahead), giving a band that widens with horizon.
+    - Otherwise `quarterly_residual_quantiles` (the flat, non-horizon-aware
+      table) is used, exactly as before.
 
     Returns DataFrame: city, forecast_quarter, predicted_cases, lower_95,
-    upper_95, model_name.
+    upper_95, proxy_value, model_name.
     """
     df = weekly_forecast_df.copy().sort_values("forecast_week")
     df["forecast_quarter"] = pd.PeriodIndex(df["forecast_week"], freq="Q").to_timestamp()
@@ -34,7 +45,15 @@ def aggregate_weekly_forecast_to_quarterly(
         model_name=("model_name", "first"),
     ).reset_index()
 
-    if quarterly_residual_quantiles is not None and grouped["proxy_value"].notna().any():
+    if horizon_bucketed_quantiles is not None and grouped["proxy_value"].notna().any():
+        quarter_position = grouped.groupby("city")["forecast_quarter"].rank(method="first").astype(int)
+        lower, upper = apply_horizon_bucketed_quantile_table(
+            grouped["predicted_cases"].values,
+            grouped["proxy_value"].values,
+            quarter_position.values,
+            horizon_bucketed_quantiles,
+        )
+    elif quarterly_residual_quantiles is not None and grouped["proxy_value"].notna().any():
         lower, upper = apply_residual_quantile_table(
             grouped["predicted_cases"].values,
             grouped["proxy_value"].values,
@@ -46,7 +65,37 @@ def aggregate_weekly_forecast_to_quarterly(
     grouped["lower_95"] = lower
     grouped["upper_95"] = upper
 
-    return grouped[["city", "forecast_quarter", "predicted_cases", "lower_95", "upper_95", "model_name"]]
+    return grouped[["city", "forecast_quarter", "predicted_cases", "lower_95", "upper_95", "proxy_value", "model_name"]]
+
+
+def aggregate_weekly_classifier_to_quarterly(
+    fold_predictions_clf: pd.DataFrame, model_name: str
+) -> pd.DataFrame:
+    """
+    Roll up one classifier's out-of-fold weekly CV predictions (output of
+    `run_nested_cv_classifier`) to quarterly epidemic status, for the
+    dashboard's historical "was this an epidemic quarter" view.
+
+    A quarter's `predicted_proba` is the mean of its weekly probabilities;
+    `is_epidemic` (the true label) is True if any week within the quarter
+    was flagged -- an epidemic that breaks out partway through a quarter
+    still makes it an epidemic quarter.
+
+    Returns DataFrame: city_name, quarter_start, predicted_proba, is_epidemic.
+    """
+    df = fold_predictions_clf[fold_predictions_clf["model"] == model_name].copy()
+    df["quarter_start"] = pd.PeriodIndex(df["week_start"], freq="Q").to_timestamp()
+
+    agg = (
+        df.groupby([CITY_COL, "quarter_start"], sort=True)
+        .agg(
+            predicted_proba=("predicted_proba", "mean"),
+            is_epidemic=("is_epidemic", "max"),
+        )
+        .reset_index()
+    )
+    agg["is_epidemic"] = agg["is_epidemic"].astype(bool)
+    return agg.sort_values([CITY_COL, "quarter_start"]).reset_index(drop=True)
 
 
 def aggregate_weekly_oof_predictions_to_quarterly(
