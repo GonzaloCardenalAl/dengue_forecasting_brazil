@@ -4,26 +4,30 @@ import pandas as pd
 from dengue_ml.config import TARGET, CITY_COL
 from dengue_ml.training_config import load_training_config
 
-# nivel_inc_week_t-1 = InfoDengue's own incidence-vs-threshold alert level
-# (0=baseline, 1=pre-epidemic alert, 2=epidemic) as of the most recently
-# known week before the target month -- "are we, as of the freshest
-# available data, already in confirmed epidemic territory." Used to condition
-# the residual distribution instead of a hard outbreak/non-outbreak label on
-# the target month itself, which would require knowing the outcome we're
-# trying to bound.
+# growth_proxy = the trained epidemic classifier's predicted probability of
+# "epidemic this week" (build_classification_features' nivel_inc==2 label),
+# read for each (city, week, fold) row -- "how likely does our own model
+# think we're already in confirmed epidemic territory, given only data
+# available as of the most recently known week." Used to condition the
+# residual distribution instead of a hard outbreak/non-outbreak label on the
+# target month itself, which would require knowing the outcome we're trying
+# to bound.
 #
-# Empirically validated against the OOF predictions of all three XGBoost
-# feature sets: this split gives ~92.5-93.1% leave-one-fold-out coverage
-# (vs. 90.6% for the previous cases_growth_1q median-split, and 73.1% for
-# the original independent-quantile-models approach this replaced).
-PROXY_SOURCE_FEATURE = "nivel_inc_week_t-1"
-# Fixed domain threshold, not a recomputed median: nivel_inc's ordinal 0/1/2
-# scale makes a per-calibration-set median unstable (it's often exactly 1).
-# ">= 2" means "last known week was already a confirmed epidemic."
-REGIME_THRESHOLD = 2
-# Label this proxy is stored under in fold_predictions/preds_df (distinct
-# from PROXY_SOURCE_FEATURE, which is the column name in the X feature
-# matrix used at forecast time, where fold_predictions doesn't exist).
+# This replaces an earlier version of this proxy that read InfoDengue's own
+# nivel_inc_week_t-1 alert level directly (empirically ~92.5-93.1% LOFO
+# coverage, vs. 90.6% for an earlier cases_growth_1q median-split, and 73.1%
+# for the original independent-quantile-models approach). nivel_inc can't be
+# computed for the forecast horizon (it's an InfoDengue-internal alert-
+# classifier output with no documented formula), so it was replaced with our
+# own classifier's prediction, which *can* run forward on forecasted weeks.
+# See features/feature_pipeline.py's nivel_inc_week_t-1 side-channel and
+# nested_cv_classifier.py's nivel_inc_rule for the retained benchmark
+# comparison against this old rule.
+PROXY_SOURCE_FEATURE = "classifier_predicted_proba"
+# Standard probability decision threshold (growth_proxy is now a predicted
+# probability in [0, 1], not nivel_inc's ordinal 0/1/2 scale).
+REGIME_THRESHOLD = 0.5
+# Label this proxy is stored under in fold_predictions/preds_df.
 PROXY_COL = "growth_proxy"
 
 
@@ -159,9 +163,9 @@ def compute_quarterly_residual_quantile_table(
     log1p(actual_sum) - log1p(predicted_sum), and run the exact same
     regime-conditional quantile calibration as the weekly table -- keyed off
     the same growth_proxy, read from the first week of each quarter (the
-    proxy is "last known week's alert level before the period starts", so the
-    first week's value is the one that would actually be available at
-    quarterly-forecast time).
+    proxy is "classifier's predicted epidemic probability as of the most
+    recently known week before the period starts", so the first week's value
+    is the one that would actually be available at quarterly-forecast time).
     """
     lower_q, upper_q = _quantile_bounds()
     sub = fold_predictions[fold_predictions["model"] == model_name].copy()
@@ -185,6 +189,37 @@ def compute_quarterly_residual_quantile_table(
         "low":  {"q_lower": float(low_resid.quantile(lower_q)),  "q_upper": float(low_resid.quantile(upper_q))},
         "high": {"q_lower": float(high_resid.quantile(lower_q)), "q_upper": float(high_resid.quantile(upper_q))},
     }
+
+
+def attach_classifier_proxy(
+    fold_predictions_reg: pd.DataFrame,
+    fold_predictions_clf: pd.DataFrame,
+    classifier_model_name: str,
+) -> pd.DataFrame:
+    """
+    Join the epidemic classifier's OOF predicted_proba onto the regression
+    pipeline's fold_predictions as growth_proxy, then run the regime-
+    conditional CI assignment now that growth_proxy actually exists.
+
+    Both nested CV runs (regression in nested_cv.py, classifier in
+    nested_cv_classifier.py) use the identical make_outer_splits/
+    make_inner_splits protocol on the same df, so every (city_name,
+    week_start) pair lands in the same outer fold in both -- joining on
+    (city_name, week_start, fold) is therefore exact, not approximate.
+    """
+    clf = fold_predictions_clf[fold_predictions_clf["model"] == classifier_model_name]
+    proxy_map = clf.set_index([CITY_COL, "week_start", "fold"])["predicted_proba"]
+
+    fold_predictions_reg = fold_predictions_reg.copy()
+    keys = pd.MultiIndex.from_arrays(
+        [fold_predictions_reg[CITY_COL], fold_predictions_reg["week_start"], fold_predictions_reg["fold"]]
+    )
+    fold_predictions_reg[PROXY_COL] = proxy_map.reindex(keys).values
+
+    for model_name in fold_predictions_reg.loc[fold_predictions_reg[PROXY_COL].notna(), "model"].unique():
+        fold_predictions_reg = assign_loFo_conditional_ci(fold_predictions_reg, model_name)
+
+    return fold_predictions_reg
 
 
 def apply_residual_quantile_table(

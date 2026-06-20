@@ -3,11 +3,13 @@ from pathlib import Path
 
 from dengue_ml.preprocessing import prepare_model_table
 from dengue_ml.validation.nested_cv import run_nested_cv
+from dengue_ml.validation.nested_cv_classifier import run_nested_cv_classifier
+from dengue_ml.validation.conditional_residuals import attach_classifier_proxy
 from dengue_ml.reporting.results_tables import (
     model_comparison_table, metrics_by_fold, baseline_improvement_table,
 )
 from dengue_ml.reporting.plots import plot_oof_predictions, plot_model_comparison
-from dengue_ml.training.final_train import select_best_model
+from dengue_ml.training.final_train import select_best_model, select_best_classifier
 
 
 def run_training_pipeline(
@@ -31,6 +33,21 @@ def run_training_pipeline(
 
     print("\nRunning nested cross-validation ...")
     fold_metrics, fold_predictions, best_hparams = run_nested_cv(df)
+
+    print("\nRunning classifier nested cross-validation (CI-regime proxy) ...")
+    fold_metrics_clf, fold_predictions_clf = run_nested_cv_classifier(df)
+    fold_metrics_clf.to_csv(outputs_dir / "fold_metrics_clf.csv", index=False)
+    fold_predictions_clf.to_csv(outputs_dir / "fold_predictions_clf.csv", index=False)
+
+    best_classifier, best_auc = select_best_classifier(fold_metrics_clf)
+    print(f"Best classifier (by mean AUC): {best_classifier} (AUC = {best_auc:.3f})")
+    # growth_proxy = this classifier's OOF predicted_proba, joined onto the
+    # regression fold_predictions -- see conditional_residuals.py. Must run
+    # before saving fold_predictions.csv so train_final_model.py's residual
+    # quantile calibration (which reads growth_proxy from that CSV) sees it.
+    fold_predictions = attach_classifier_proxy(fold_predictions, fold_predictions_clf, best_classifier)
+    with open(outputs_dir / "selected_classifier.txt", "w") as f:
+        f.write(best_classifier)
 
     # Save outputs
     fold_metrics.to_csv(outputs_dir / "fold_metrics.csv", index=False)

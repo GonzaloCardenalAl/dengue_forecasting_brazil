@@ -1,0 +1,96 @@
+---
+title: "Calculation of (ti)Rt and (td)Rt for dengue"
+output: html_notebook
+author: Codeco et al (Epidemics 2017)
+---
+
+
+```{r, echo=FALSE,warnings=FALSE}
+source("./EstRtGT_v4.R")
+require(R0)
+require(parallel)
+require(grid)
+require(ggplot2)
+source("./sumgamma_v2.R")
+maxcores <- detectCores()  # number of cpu cores
+```
+
+
+## Data 
+
+```{r}
+d = read.csv("FIdata.csv")
+d$t <- 1:nrow(d)
+
+par(mfrow=c(2,1),mar=c(4,4,3,1))
+plot(d$t, d$temp_med, main="temperature", ylab="temperature (C)" , xlab="week")
+temp.lo=predict(loess(d$temp_med~d$t, span=0.05)) # we smooth the temperature (optional)
+lines(temp.lo)
+
+plot(d$t, d$casos, type="l",xlab="week",ylab="cases")
+```
+
+### calculate the matrix with the distribution of generation interval per week
+
+```{r}
+# this can take a while...
+Tmax <- length(d$casos)
+GTmax = 5 # maximum generation time (weeks)
+
+gt <- mcmapply(evalGenTimeDist, 1:Tmax ,MoreArgs=list(a=c(16, 4.3, 1, 1),
+                                                                   b=c(1/2.69821, 1/0.4623722, 1, 1),
+                                                                   serT=temp.lo, tt=d$t, GT.max = GTmax), 
+                   mc.cores=min(maxcores, 10))
+
+n = GTmax + 1
+contour(gt[1:n,1:Tmax], x=1:n,y=1:Tmax, ylab="time", xlab="generation time (week)",
+               main="")
+```
+
+
+
+### Rt estimation 
+
+```{r, results="hide",warning=FALSE}
+# with constant generation time (standard function from library R0)
+mGT<-R0::generation.time("gamma", c(3, 1))
+TD <- R0::est.R0.TD(d$casos, mGT, begin=1, end=385, nsim=1000, correct=FALSE)
+```
+
+
+```{r}
+#  with temperature-dependent estimator (this study)
+nsim=1000 
+
+#GT 
+gt.lo<- matrix(0, ncol = Tmax, nrow=Tmax)
+gt.lo[1:n, ] <- gt
+gt.lo <- t(gt.lo)
+
+Rt.lo <- est.R.Temp(d$casos[1:Tmax], mGT, GTTemp=gt.lo, date=d$t[1:Tmax], begin=1, end=Tmax, correct = FALSE, nsim=nsim)
+```
+
+
+```{r}
+#  ggplot
+
+lT <- length(Rt.lo$R)
+df.result.lo <- data.frame(R = Rt.lo$R, ymin=Rt.lo$conf.int[1], 
+                        ymax=Rt.lo$conf.int[2], date=Rt.lo$date[1:lT], incid = Rt.lo$epid$incid,
+                        dt.inicio =1:lT,                        
+                        type="temperature-dependent")
+
+rangeTD <- c(1, Tmax)
+
+df.static <- data.frame(R= TD$R, ymin=TD$conf.int[1],
+                        ymax=TD$conf.int[2], date=Rt.lo$date[1:lT],
+                        incid = Rt.lo$epid$incid, dt.inicio =1:lT, 
+                        type="temperature-independent")
+
+df.result.lo <- rbind(df.result.lo, df.static)
+
+ggplot(data=df.result.lo, aes(x=dt.inicio, y=R, ymin=lower, ymax=upper)) + ylim(0,5.0) + 
+  geom_ribbon() + geom_line() + geom_line(aes(y=1), linetype=2) + facet_grid(type ~ . ) 
+
+```
+

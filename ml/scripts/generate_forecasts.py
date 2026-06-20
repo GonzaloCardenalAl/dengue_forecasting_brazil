@@ -30,7 +30,14 @@ if __name__ == "__main__":
 
     artifact        = joblib.load(model_path)
     df              = prepare_model_table()
-    weekly_forecast_df = generate_next_52w_forecast(artifact, df)
+
+    classifier_path = run_dir / "final_classifier.pkl"
+    classifier_artifact = joblib.load(classifier_path) if classifier_path.exists() else None
+    if classifier_artifact is None:
+        print(f"Warning: {classifier_path} not found — forecast CI will fall back "
+              f"to NaN proxy_value/lower_95/upper_95 for the forecast horizon.")
+
+    weekly_forecast_df = generate_next_52w_forecast(artifact, df, classifier_artifact=classifier_artifact)
 
     quarterly_residual_quantiles = None
     fold_predictions_path = run_dir / "fold_predictions.csv"

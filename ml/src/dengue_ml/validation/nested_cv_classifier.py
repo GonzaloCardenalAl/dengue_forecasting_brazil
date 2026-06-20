@@ -11,15 +11,18 @@ from dengue_ml.models.classifier_models import (
 from dengue_ml.training.hyperparameter_search import random_search_logreg, random_search_xgb_clf
 from dengue_ml.validation.time_splits import make_outer_splits, make_inner_splits
 from dengue_ml.validation.classification_metrics import calculate_all_classification_metrics
-from dengue_ml.validation.conditional_residuals import PROXY_SOURCE_FEATURE, REGIME_THRESHOLD
 
-# Same alert-lag column the regression pipeline's CI-regime proxy reads
-# (PROXY_SOURCE_FEATURE), plus its sustained_rt counterpart -- both are
-# already present in X_te (part of the cases_only feature set's weekly alert
-# lags), so they're pulled straight off the classifier's own rows rather than
-# recomputed. This is what makes the precision/recall/F1 comparison across
-# {nivel_inc rule, sustained_rt rule, trained classifier} fair: identical
-# (city, week, fold) population for every candidate.
+# Benchmark-only rules, scored on the same rows as the trained classifier for
+# a fair comparison -- NOT used as model inputs (nivel_inc isn't in
+# FEATURE_COLS; see feature_pipeline.py) and NOT the production CI-regime
+# proxy anymore (that's now the trained classifier's predicted_proba itself,
+# see conditional_residuals.py). nivel_inc_week_t-1 comes from meta_te (a
+# side channel feature_pipeline.py attaches outside of X specifically so it
+# stays available for this comparison without being a model input).
+# sustained_rt_week_t-1 IS still a model input (sustained_rt wasn't removed),
+# so it's read from X_te as before.
+NIVEL_INC_RULE_FEATURE   = "nivel_inc_week_t-1"
+NIVEL_INC_RULE_THRESHOLD = 2
 SUSTAINED_RT_FEATURE = "sustained_rt_week_t-1"
 
 
@@ -112,6 +115,6 @@ def _run_one_classifier(
     preds_df = meta_te.copy()
     preds_df["predicted_proba"]    = proba
     preds_df["is_epidemic"]        = y_te.values
-    preds_df["nivel_inc_rule"]     = (X_te[PROXY_SOURCE_FEATURE] >= REGIME_THRESHOLD).astype(int).values
+    preds_df["nivel_inc_rule"]     = (meta_te[NIVEL_INC_RULE_FEATURE] >= NIVEL_INC_RULE_THRESHOLD).astype(int).values
     preds_df["sustained_rt_rule"]  = (X_te[SUSTAINED_RT_FEATURE] >= 0.5).astype(int).values
     return preds_df

@@ -2,7 +2,9 @@
 """Train the final model on all data. Writes into the current run directory."""
 import pandas as pd
 from dengue_ml.run_dir import get_latest_run_dir
-from dengue_ml.training.final_train import train_final_model, select_best_model
+from dengue_ml.training.final_train import (
+    train_final_model, select_best_model, train_final_classifier, select_best_classifier,
+)
 from dengue_ml.preprocessing import prepare_model_table
 from dengue_ml.reporting.plots import plot_feature_importance
 from dengue_ml.reporting.results_tables import feature_importance_table
@@ -13,6 +15,7 @@ if __name__ == "__main__":
 
     fold_metrics_path = run_dir / "fold_metrics.csv"
     fold_predictions_path = run_dir / "fold_predictions.csv"
+    fold_metrics_clf_path = run_dir / "fold_metrics_clf.csv"
     if not fold_metrics_path.exists():
         raise FileNotFoundError(
             f"{fold_metrics_path} not found — run run_nested_cv.py first."
@@ -34,3 +37,16 @@ if __name__ == "__main__":
         feature_importance_table(artifact["model"], feat_cols, outputs_dir=run_dir)
         plot_feature_importance(artifact["model"], feat_cols)
         print("Feature importance saved.")
+
+    # Final epidemic classifier -- its predicted probability is the
+    # CI-regime proxy applied at forecast time (forecasting/forecast_next_52w.py).
+    if fold_metrics_clf_path.exists():
+        fold_metrics_clf = pd.read_csv(fold_metrics_clf_path)
+        best_classifier, best_auc = select_best_classifier(fold_metrics_clf)
+        print(f"Best classifier: {best_classifier}  (mean AUC = {best_auc:.3f})")
+        train_final_classifier(
+            selected_model_name=best_classifier, df=df, outputs_dir=run_dir,
+        )
+    else:
+        print(f"{fold_metrics_clf_path} not found — skipping final classifier "
+              f"(run run_nested_cv.py with the classifier CV step first).")

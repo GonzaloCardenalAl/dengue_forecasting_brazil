@@ -13,9 +13,6 @@ from dengue_ml.models.xrfm_models import train_xrfm, predict_xrfm
 from dengue_ml.training.hyperparameter_search import random_search_xgb, random_search_xrfm
 from dengue_ml.validation.time_splits import make_outer_splits, make_inner_splits
 from dengue_ml.validation.metrics import calculate_all_metrics
-from dengue_ml.validation.conditional_residuals import (
-    assign_loFo_conditional_ci, PROXY_COL, PROXY_SOURCE_FEATURE,
-)
 
 
 def run_nested_cv(
@@ -83,10 +80,11 @@ def run_nested_cv(
     fold_predictions = pd.concat(all_preds, ignore_index=True) if all_preds else pd.DataFrame()
     best_hyperparams = pd.DataFrame(all_hparams)
 
-    if not fold_predictions.empty and PROXY_COL in fold_predictions.columns:
-        for model_name in fold_predictions.loc[fold_predictions[PROXY_COL].notna(), "model"].unique():
-            fold_predictions = assign_loFo_conditional_ci(fold_predictions, model_name)
-
+    # growth_proxy (the epidemic classifier's predicted probability) isn't
+    # available here -- it comes from a separate classifier nested CV run.
+    # train_pipeline.py joins it in afterward (conditional_residuals.
+    # attach_classifier_proxy) and re-runs assign_loFo_conditional_ci once
+    # growth_proxy is actually populated.
     return fold_metrics, fold_predictions, best_hyperparams
 
 
@@ -142,10 +140,9 @@ def _run_one_model(
 
         preds_df = meta_te.copy()
         preds_df["predicted"]  = preds
-        # CI is calibrated later (in run_nested_cv, across all folds at once) from
-        # this model's own OOF residuals, conditioned on growth_proxy — see
-        # conditional_residuals.py. lower_95/upper_95 filled in there.
-        preds_df[PROXY_COL] = X_te[PROXY_SOURCE_FEATURE].values
+        # growth_proxy/lower_95/upper_95 are filled in later, after the
+        # classifier proxy has been joined in — see
+        # conditional_residuals.attach_classifier_proxy and train_pipeline.py.
         return preds_df, best_params
 
     if model_name.startswith("xrfm"):
@@ -181,7 +178,6 @@ def _run_one_model(
 
         preds_df = meta_te.copy()
         preds_df["predicted"] = preds
-        preds_df[PROXY_COL] = X_te[PROXY_SOURCE_FEATURE].values
         return preds_df, best_params
 
     raise ValueError(f"Unknown model_name '{model_name}'.")

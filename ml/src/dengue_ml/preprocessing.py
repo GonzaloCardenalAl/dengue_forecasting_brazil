@@ -91,10 +91,15 @@ def prepare_weekly_table(
     # a real outbreak (75.5% recall, 57% precision against true nivel_inc==2
     # onsets) than the pre-epidemic alert level alone (100% recall, 11.7%
     # precision) -- worth exposing to the model as its own feature.
+    # float (0.0/1.0), not bool: a bool column's .shift() in
+    # add_weekly_lag_features introduces NaN for the first few rows per city,
+    # which pandas can only represent by upcasting the whole column to
+    # `object` dtype -- XGBoost then rejects it ("DataFrame.dtypes ... must
+    # be int, float, bool or category").
     high_rt = df["p_rt1"] > 0.95
     df["sustained_rt"] = (
         high_rt.groupby(df[CITY_COL]).transform(lambda s: s.rolling(3).sum() >= 3)
-    )
+    ).astype(float)
 
     df = df.rename(columns={"umidmed": "humidmed"})
     cols = [

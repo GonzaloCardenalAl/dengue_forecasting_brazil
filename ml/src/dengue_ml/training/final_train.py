@@ -4,12 +4,17 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-from dengue_ml.config import CITY_COL, TARGET, CITIES
+from dengue_ml.config import CITY_COL, TARGET, CITIES, CLASSIFICATION_FEATURE_SET
 from dengue_ml.preprocessing import prepare_model_table
-from dengue_ml.features.feature_pipeline import build_features, build_features_for_split, FEATURE_COLS
+from dengue_ml.features.feature_pipeline import (
+    build_features, build_features_for_split, build_classification_features, FEATURE_COLS,
+)
 from dengue_ml.models.xgboost_models import train_xgb
 from dengue_ml.models.xrfm_models import train_xrfm
 from dengue_ml.models.sarima import fit_sarima, tune_sarima
+from dengue_ml.models.classifier_models import (
+    train_logreg, predict_proba_logreg, train_xgb_clf, predict_proba_xgb_clf,
+)
 from dengue_ml.validation.time_splits import make_inner_splits
 from dengue_ml.validation.conditional_residuals import compute_residual_quantile_table, PROXY_COL
 
@@ -101,6 +106,70 @@ def train_final_model(
 
     print(f"Final model saved → {outputs_dir / 'final_model.pkl'}")
     return artifact
+
+
+def select_best_classifier(fold_metrics_clf: pd.DataFrame) -> tuple[str, float]:
+    """
+    Return (best_model_name, mean_auc) for the epidemic classifier -- ranked
+    by mean AUC across outer folds. AUC (not F1/precision/recall at the fixed
+    0.5 threshold) is the right selection criterion here because the
+    classifier's output is consumed as a continuous probability
+    (`growth_proxy`, see conditional_residuals.py), not just a thresholded
+    label -- AUC measures how well-ordered those probabilities are across
+    the full range, which is what the downstream regime split actually needs.
+    """
+    mean_auc = fold_metrics_clf.groupby("model")["auc"].mean()
+    best = mean_auc.idxmax()
+    return best, float(mean_auc.loc[best])
+
+
+def train_final_classifier(
+    selected_model_name: str,
+    df: pd.DataFrame,
+    selected_params: dict | None = None,
+    feature_set: str = CLASSIFICATION_FEATURE_SET,
+    outputs_dir: Path | None = None,
+) -> dict:
+    """
+    Train the final epidemic classifier on all available historical data and
+    persist it as its own artifact (final_classifier.pkl, parallel to
+    final_model.pkl) -- this is the model whose predicted probability becomes
+    the production CI-regime proxy (growth_proxy) both for the calibration
+    table (via OOF predictions, see conditional_residuals.py) and for live
+    forecast-time inference (forecasting/forecast_next_52w.py).
+    """
+    if outputs_dir is None:
+        from dengue_ml.run_dir import get_latest_run_dir
+        outputs_dir = get_latest_run_dir()
+    outputs_dir.mkdir(parents=True, exist_ok=True)
+
+    X_tr, y_tr, _, _ = build_classification_features(df, feature_set)
+
+    if selected_model_name == "logreg":
+        model = train_logreg(X_tr, y_tr, params=selected_params)
+    elif selected_model_name == "xgb_clf":
+        model = train_xgb_clf(X_tr, y_tr, params=selected_params)
+    else:
+        raise ValueError(f"Unknown classifier model_name '{selected_model_name}'.")
+
+    artifact = {
+        "model_name":   selected_model_name,
+        "model":        model,
+        "feature_set":  feature_set,
+        "feature_cols": list(X_tr.columns),
+    }
+    joblib.dump(artifact, outputs_dir / "final_classifier.pkl")
+    print(f"Final classifier saved → {outputs_dir / 'final_classifier.pkl'}")
+    return artifact
+
+
+def predict_proba_classifier(artifact: dict, X: pd.DataFrame) -> np.ndarray:
+    """Dispatch to the right predict_proba_* for a final_classifier.pkl artifact."""
+    if artifact["model_name"] == "logreg":
+        return predict_proba_logreg(artifact["model"], X)
+    if artifact["model_name"] == "xgb_clf":
+        return predict_proba_xgb_clf(artifact["model"], X)
+    raise ValueError(f"Unknown classifier model_name '{artifact['model_name']}'.")
 
 
 def select_best_model(fold_metrics: pd.DataFrame) -> tuple[str, float]:

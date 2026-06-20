@@ -21,14 +21,21 @@ N_WEEKS_CLIMATE = 8
 # lags in sst_features.py.
 N_MONTHS_SST = 6
 
-# InfoDengue's own surveillance status fields (transmission/receptivity/alert
-# level/Rt), at week-level resolution -- same rationale as the cases/climate
-# windows above: the actual recent trajectory, not a single monthly summary.
+# InfoDengue's own Rt-derived surveillance fields, at week-level resolution
+# -- same rationale as the cases/climate windows above: the actual recent
+# trajectory, not a single monthly summary.
+#
+# transmissao/receptivo/nivel_inc are deliberately NOT here, even though
+# they're in the raw InfoDengue feed: they're outputs of InfoDengue's own
+# internal alert classifier with no documented formula, so there is no way
+# to compute them for the forecast horizon (unlike Rt/p_rt1, which we can
+# estimate forward via features/rt_estimation.py). Carrying them forward flat
+# for a year would be indefensible, so they're excluded from feature
+# engineering entirely. nivel_inc is still kept (just not as a lag feature
+# here) as the epidemic classifier's label -- see build_classification_features.
 N_WEEKS_ALERT = 8  # matches N_WEEKS_CLIMATE
 _ALERT_VALUE_COLS = [
-    ("nivel_inc", "nivel_inc"), ("transmissao", "transmissao"),
-    ("receptivo", "receptivo"), ("Rt", "rt"), ("p_rt1", "p_rt1"),
-    ("sustained_rt", "sustained_rt"),
+    ("Rt", "rt"), ("p_rt1", "p_rt1"), ("sustained_rt", "sustained_rt"),
 ]
 
 # Feature columns for each set (populated at end of module)
@@ -110,6 +117,14 @@ def _build_feature_matrix(
     for value_col, prefix in _ALERT_VALUE_COLS:
         df = add_weekly_lag_features(df, value_col=value_col, prefix=prefix, n_weeks=N_WEEKS_ALERT)
 
+    # nivel_inc_week_t-1 is kept as a side channel (NOT added to FEATURE_COLS,
+    # so it never reaches the cases-forecasting or classifier models as an
+    # input) purely for the nivel_inc_rule benchmark comparison in
+    # nested_cv_classifier.py / proxy_comparison_table -- both only need the
+    # last *observed* value, which this lag already is.
+    if "nivel_inc" in df.columns:
+        df["nivel_inc_week_t-1"] = df.groupby(CITY_COL, sort=False)["nivel_inc"].shift(1)
+
     returned_climate_stats = None
     if feature_set in ("cases_climate", "cases_climate_sst"):
         df, returned_climate_stats = add_climate_features(df, fit_stats=climate_fit_stats)
@@ -131,7 +146,10 @@ def _build_feature_matrix(
     df_clean = df.dropna(subset=cols).copy()
 
     X    = df_clean[cols]
-    meta = df_clean[[CITY_COL, "week_start"]].reset_index(drop=True)
+    meta_cols = [CITY_COL, "week_start"]
+    if "nivel_inc_week_t-1" in df_clean.columns:
+        meta_cols.append("nivel_inc_week_t-1")
+    meta = df_clean[meta_cols].reset_index(drop=True)
 
     return df_clean.reset_index(drop=True), X.reset_index(drop=True), meta, returned_climate_stats
 

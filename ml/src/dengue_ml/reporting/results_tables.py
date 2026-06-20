@@ -137,15 +137,19 @@ def proxy_comparison_table(
 
     rows = []
 
+    # Both are legacy rule-based candidates, scored for comparison only --
+    # neither is the production proxy anymore (that's now the selected
+    # classifier model's own predicted_proba, joined into fold_predictions_reg
+    # as growth_proxy by conditional_residuals.attach_classifier_proxy), so
+    # both need their own key_to_high mask rather than relying on the
+    # (classifier-based) production default.
     ref = fold_predictions_clf.drop_duplicates(["city_name", "week_start"])
-    for rule_col, label, use_production_default in [
-        ("nivel_inc_rule", "nivel_inc", True),       # identical to the production proxy already in fold_predictions_reg
-        ("sustained_rt_rule", "sustained_rt", False),
+    for rule_col, label in [
+        ("nivel_inc_rule", "nivel_inc"),
+        ("sustained_rt_rule", "sustained_rt"),
     ]:
         m = calculate_all_classification_metrics(ref["is_epidemic"].values, ref[rule_col].values)
-        key_to_high = None
-        if not use_production_default:
-            key_to_high = dict(zip(zip(ref["city_name"], ref["week_start"]), ref[rule_col].astype(bool)))
+        key_to_high = dict(zip(zip(ref["city_name"], ref["week_start"]), ref[rule_col].astype(bool)))
         coverage, n_high, n_low = _coverage_for(key_to_high)
         rows.append({"candidate": label, **m, "coverage": coverage, "n_high_regime": n_high, "n_low_regime": n_low})
 
