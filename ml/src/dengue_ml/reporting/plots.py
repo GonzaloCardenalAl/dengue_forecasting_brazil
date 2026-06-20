@@ -136,6 +136,7 @@ def plot_model_comparison(
 def plot_final_forecast(
     forecast_df: pd.DataFrame,
     historical_df: pd.DataFrame,
+    oof_quarterly_df: pd.DataFrame | None = None,
     n_historical_q: int = 12,
     outputs_dir: Path | None = None,
 ) -> None:
@@ -146,6 +147,13 @@ def plot_final_forecast(
     (still-converging) quarter — excluded from training — is included here
     and shows its genuinely wide casos_est_min/casos_est_max band. Older,
     converged quarters have a near-zero-width band, which is expected.
+
+    oof_quarterly_df (optional, e.g. via quarterly_aggregation.
+    aggregate_weekly_oof_predictions_to_quarterly for the final model) adds
+    the model's own historical out-of-fold predictions as a red dashed line
+    leading into the solid-red forecast line, so the "model prediction"
+    line reads as one continuous (past + future) series, distinct from the
+    blue actual-cases line.
     """
     fig, axes = plt.subplots(2, 2, figsize=(14, 8))
     axes = axes.flatten()
@@ -175,7 +183,19 @@ def plot_final_forecast(
                     xytext=(0, 8), textcoords="offset points",
                     fontsize=7, color="blue", ha="right",
                 )
-        ax.plot(hist["quarter_start"], _log_floor(hist[TARGET]), "b-o", ms=4, label="Historical")
+        ax.plot(hist["quarter_start"], _log_floor(hist[TARGET]), "b-o", ms=4, label="Historical (actual)")
+
+        if oof_quarterly_df is not None:
+            oof = (
+                oof_quarterly_df[oof_quarterly_df[CITY_COL] == city]
+                .sort_values("quarter_start")
+            )
+            oof = oof[oof["quarter_start"] >= hist["quarter_start"].min()]
+            if not oof.empty:
+                ax.plot(
+                    oof["quarter_start"], _log_floor(oof["predicted_cases"]),
+                    "r--o", ms=3, alpha=0.7, label="Model prediction (past, OOF)",
+                )
 
         has_ci = fcast["lower_95"].notna().any()
         if has_ci:
@@ -196,6 +216,68 @@ def plot_final_forecast(
     fig.suptitle("4-quarter dengue forecast by city", fontsize=13)
     fig.tight_layout()
     _savefig("final_forecast.png", fig, outputs_dir)
+
+
+def plot_forecast_vs_previous_year(
+    forecast_df: pd.DataFrame,
+    historical_df: pd.DataFrame,
+    n_lead_in_q: int = 2,
+    outputs_dir: Path | None = None,
+) -> None:
+    """
+    Zoomed-in companion to plot_final_forecast: just the forecast year plus
+    `n_lead_in_q` quarters of actual history leading into it, with the same
+    quarters from exactly one year earlier overlaid on the same x-axis
+    positions (shifted forward a year) -- so the new forecast can be read
+    directly against what actually happened in the equivalent quarters last
+    year, rather than against a multi-year, log-scale view where a one-year
+    shift is hard to judge by eye.
+
+    historical_df: full quarterly history (not pre-truncated -- the
+    previous-year lookup needs quarters older than `n_lead_in_q`).
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(14, 8))
+    axes = axes.flatten()
+    for ax, city in zip(axes, CITIES):
+        hist_all = (
+            historical_df[historical_df[CITY_COL] == city]
+            .sort_values("quarter_start")
+        )
+        hist_recent = hist_all.tail(n_lead_in_q)
+        fcast = forecast_df[forecast_df["city"] == city].sort_values("forecast_quarter")
+        n_hist = len(hist_recent)
+
+        quarters = list(hist_recent["quarter_start"]) + list(fcast["forecast_quarter"])
+        x = list(range(len(quarters)))
+        labels = [f"{q.year} Q{q.quarter}" for q in quarters]
+
+        hist_lookup = hist_all.set_index("quarter_start")[TARGET]
+        prev_quarters = [q - pd.DateOffset(years=1) for q in quarters]
+        prev_cycle = [hist_lookup.get(q, np.nan) for q in prev_quarters]
+
+        has_ci = {"lower_95", "upper_95"}.issubset(fcast.columns) and fcast["lower_95"].notna().any()
+        if has_ci:
+            ax.fill_between(
+                x[n_hist:], _log_floor(fcast["lower_95"]), _log_floor(fcast["upper_95"]),
+                alpha=0.2, color="red", label="Forecast 95% CI",
+            )
+
+        ax.plot(x[:n_hist], _log_floor(hist_recent[TARGET]), "b-o", ms=5, label="Actual (recent)")
+        ax.plot(x[n_hist:], _log_floor(fcast["predicted_cases"]), "r-o", ms=5, label="Forecast")
+        ax.plot(
+            x, _log_floor(pd.Series(prev_cycle)), color="gray", linestyle="--",
+            marker="o", ms=4, label="Same quarters, previous year (actual)",
+        )
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels)
+        ax.set_yscale("log")
+        ax.set_title(city)
+        ax.set_ylabel("Estimated cases (log scale)")
+        ax.legend(fontsize=8)
+    fig.suptitle("Forecast year vs. same quarters last year", fontsize=13)
+    fig.tight_layout()
+    _savefig("forecast_vs_previous_year.png", fig, outputs_dir)
 
 
 def plot_oof_predictions(
@@ -283,14 +365,16 @@ def plot_feature_importance(
     feature_names: list[str],
     top_n: int = 20,
     outputs_dir: Path | None = None,
+    model_label: str = "XGBoost",
 ) -> None:
     scores = model.feature_importances_
+    top_n = min(top_n, len(scores))
     idx = np.argsort(scores)[::-1][:top_n]
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.barh(range(top_n), scores[idx][::-1], align="center")
     ax.set_yticks(range(top_n))
     ax.set_yticklabels([feature_names[i] for i in idx[::-1]])
-    ax.set_xlabel("Feature importance (gain)")
-    ax.set_title(f"Top {top_n} XGBoost feature importances")
+    ax.set_xlabel("Feature importance (gain)" if model_label == "XGBoost" else "Feature importance (AGOP diagonal, normalized)")
+    ax.set_title(f"Top {top_n} {model_label} feature importances")
     fig.tight_layout()
     _savefig("feature_importance.png", fig, outputs_dir)

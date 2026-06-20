@@ -49,6 +49,30 @@ def aggregate_weekly_forecast_to_quarterly(
     return grouped[["city", "forecast_quarter", "predicted_cases", "lower_95", "upper_95", "model_name"]]
 
 
+def aggregate_weekly_oof_predictions_to_quarterly(
+    fold_predictions: pd.DataFrame, model_name: str
+) -> pd.DataFrame:
+    """
+    Roll up one model's out-of-fold weekly CV predictions (output of
+    `run_nested_cv`) to quarterly sums, so the final-forecast plot can show
+    the model's own historical track record (not just the raw actuals)
+    leading into the forecast -- a single continuous "model prediction"
+    line, past (backtested) and future (forecast).
+
+    Returns DataFrame: city_name, quarter_start, predicted_cases.
+    """
+    df = fold_predictions[fold_predictions["model"] == model_name].copy()
+    df["quarter_start"] = pd.PeriodIndex(df["week_start"], freq="Q").to_timestamp()
+
+    agg = (
+        df.groupby([CITY_COL, "quarter_start"], sort=True)["predicted"]
+        .sum()
+        .reset_index()
+        .rename(columns={"predicted": "predicted_cases"})
+    )
+    return agg.sort_values([CITY_COL, "quarter_start"]).reset_index(drop=True)
+
+
 def aggregate_weekly_history_to_quarterly(weekly_df: pd.DataFrame) -> pd.DataFrame:
     """
     Roll up a weekly historical table (output of `prepare_model_table`) to

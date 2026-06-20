@@ -72,3 +72,41 @@ _Auto-maintained by Claude Code. One entry per completed task._
 - Full test suite (22 tests) passes. Full nested-CV run, `generate_forecasts.py`/`run_classifier_cv.py` end-to-end smoke tests, and a real SLURM batch run were not executed in this session — only the SARIMA timing concern above and the unit-level smoke tests (data load, splits, feature building, baseline, forecast-loop bug-fix verification) were run interactively.
 
 ---
+## Fix forecast-horizon feature generation: climate, alert features, Rt/p_rt1 — 2026-06-20 02:15
+
+**Goal:** Stop seeding the 52-week-ahead autoregressive forecast loop with flat carry-forward values for features that should evolve (climate, Rt/p_rt1) or that can't legitimately be carried forward at all (InfoDengue's internal alert-classifier outputs), and replace the CI-regime proxy with something computable at forecast time.
+
+**Changes:**
+- `ml/src/dengue_ml/forecasting/forecast_next_52w.py` — added `_climatological_val()` (city + ISO-week-of-year historical mean) to seed future `tempmed`/`humidmed` instead of `_last_val()`; dropped `transmissao`/`receptivo`/`nivel_inc` stub seeding entirely; added a two-pass autoregressive design (`_forecast_with_rt_estimation`/`_autoregressive_loop`/`_estimate_rt_lookup`): a draft pass produces a plausible case trajectory, then `features/rt_estimation.py`'s Rt/p_rt1 estimator runs once over history+draft, and a final pass reuses that estimate (plus the trained classifier's predicted probability as the CI proxy) instead of carrying Rt/p_rt1/the CI proxy forward flat.
+- `ml/src/dengue_ml/features/rt_estimation.py` — new module: from-scratch numpy/scipy port of the Codeco et al. (2017) temperature-dependent Wallinga-Teunis Rt estimator (Moschopoulos sum-of-gammas + renewal-equation multinomial resampling), with `p_rt1` derived as the fraction of simulated R(t) draws exceeding 1. No R/rpy2 dependency.
+- `ml/src/dengue_ml/features/feature_pipeline.py` — shrank `_ALERT_VALUE_COLS` to just `Rt`/`p_rt1`/`sustained_rt` (drops `transmissao`/`receptivo`/`nivel_inc` as model inputs for both the cases models and the epidemic classifier); kept `nivel_inc_week_t-1` as a side-channel in `meta` for the legacy benchmark comparison and as the classifier's label source.
+- `ml/src/dengue_ml/training/final_train.py`, `train_pipeline.py` — added `select_best_classifier`/`train_final_classifier`, wired the classifier nested CV into the main pipeline, and joined its OOF predicted probability into the existing CI calibration machinery.
+- `ml/src/dengue_ml/validation/conditional_residuals.py`, `nested_cv.py`, `nested_cv_classifier.py` — `attach_classifier_proxy` joins the classifier's probability onto the regression fold rows; proxy threshold/docstrings updated from the old `nivel_inc`-based rule to the classifier-probability proxy.
+- `ml/src/dengue_ml/preprocessing.py`, `reporting/results_tables.py`, `ml/scripts/generate_forecasts.py`, `train_final_model.py` — supporting renames/wiring for the above.
+- `ml/tests/test_nested_cv_classifier.py` — updated fixtures for the `nivel_inc_week_t-1`-in-`meta` side channel.
+- `ml/src/dengue_ml/features/Codeco-et-al-2017/` (+ top-level `EstRtGT_v4.R`, `sumgamma_v2.R`, `Rt_calc-example.rmd`) — reference materials (original paper, R scripts, example datasets) kept alongside the Python port for future validation/reference.
+
+**Why:** The cases-forecasting loop was already correct (each predicted week's lags recompute live), but every other feature was flat-carried-forward for all 52 weeks — a defensible stub for population, but wrong for seasonal climate and conceptually broken for Rt/p_rt1 (an epidemiological parameter that should track the forecasted case curve) and for transmissao/receptivo/nivel_inc (InfoDengue's own undocumented internal classifier outputs, which can't be computed for the future at all). The CI-regime proxy previously read raw `nivel_inc`, which is exactly the kind of field that no longer exists for forecast weeks post-fix, so it was swapped for the trained epidemic classifier's predicted probability, which can run forward on forecasted weeks.
+
+**Assumptions & trade-offs:**
+- Rt/p_rt1 estimator validated against the Codeco et al. paper's own published example (FIdata.csv) and against the real R implementation (R0 package, installed via conda for this comparison) run on actual InfoDengue data — not just unit-tested in isolation.
+- Two-pass design (draft forecast → estimate Rt/p_rt1 once over the full horizon → final forecast) is deliberately cheap relative to re-running the renewal-equation estimation every single forecast week.
+- Two latent bugs fixed along the way: `sustained_rt`'s bool dtype upcasting to `object` after `.shift()` (rejected by XGBoost), and negative-valued draft case predictions breaking the renewal equation's non-negativity requirement (now clipped before Rt estimation).
+
+---
+## Add model-history continuity line and year-over-year comparison plot — 2026-06-20
+
+**Goal:** Make `final_forecast.png`'s model-prediction line read as one continuous (past + future) series rather than just raw actuals followed by a forecast, and add a zoomed companion plot comparing the new forecast year directly against the same quarters one year earlier.
+
+**Changes:**
+- `ml/src/dengue_ml/forecasting/quarterly_aggregation.py` — new `aggregate_weekly_oof_predictions_to_quarterly(fold_predictions, model_name)`: sums one model's out-of-fold weekly CV predictions (`run_nested_cv`'s `fold_predictions`) to quarterly, for plotting.
+- `ml/src/dengue_ml/reporting/plots.py` — `plot_final_forecast` gained an optional `oof_quarterly_df` param: plots the model's historical OOF predictions as a red dashed line (vs. the existing solid blue actual-cases line), leading into the existing solid-red forecast line, so the two red segments read as one continuous "model prediction" track. Also added new `plot_forecast_vs_previous_year(forecast_df, historical_df, n_lead_in_q=2)`: a per-city zoomed view of just the forecast year + `n_lead_in_q` quarters of lead-in actuals, with the same quarters from exactly one year earlier overlaid on the same x-axis positions (shifted forward a year) — saved as `forecast_vs_previous_year.png`.
+- `ml/scripts/generate_forecasts.py` — builds `oof_quarterly_df` from the already-loaded `fold_predictions`/final model name and passes it to `plot_final_forecast`; calls the new `plot_forecast_vs_previous_year`.
+
+**Why:** User wants to see the model's own historical track record (not just raw actuals) flow into the forecast on the main chart, and a separate, easier-to-read view focused on the new forecast year benchmarked against the equivalent quarters last year (the existing multi-year log-scale chart makes a one-year-ago comparison hard to judge by eye).
+
+**Assumptions & trade-offs:**
+- Confirmed via clarifying question with the user: the OOF line is *additive* (actual-cases history line stays as-is) rather than replacing it; the previous-year comparison plot shows previous year's *actual cases only* (not also last year's archived forecast, which would require locating a specific older run's saved forecast and was judged too fragile).
+- Not validated against a real current-grain run: no `ml/results/run_*/fold_predictions.csv` on disk yet has the post-weekly-conversion `week_start` schema (all existing runs predate that conversion and use `month_start`/`quarter_start` from the old grain) — `aggregate_weekly_oof_predictions_to_quarterly` and both plot functions were smoke-tested against synthetic data matching the current schema instead (verified they render without error and look visually correct). Full test suite (22 tests) still passes.
+
+---

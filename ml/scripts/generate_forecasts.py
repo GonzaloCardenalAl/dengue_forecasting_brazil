@@ -13,10 +13,11 @@ from dengue_ml.preprocessing import prepare_model_table
 from dengue_ml.forecasting.forecast_next_52w import generate_next_52w_forecast
 from dengue_ml.forecasting.quarterly_aggregation import (
     aggregate_weekly_forecast_to_quarterly, aggregate_weekly_history_to_quarterly,
+    aggregate_weekly_oof_predictions_to_quarterly,
 )
 from dengue_ml.validation.conditional_residuals import compute_quarterly_residual_quantile_table, PROXY_COL
 from dengue_ml.reporting.results_tables import final_forecast_table
-from dengue_ml.reporting.plots import plot_final_forecast
+from dengue_ml.reporting.plots import plot_final_forecast, plot_forecast_vs_previous_year
 
 if __name__ == "__main__":
     run_dir = get_latest_run_dir()
@@ -40,12 +41,17 @@ if __name__ == "__main__":
     weekly_forecast_df = generate_next_52w_forecast(artifact, df, classifier_artifact=classifier_artifact)
 
     quarterly_residual_quantiles = None
+    oof_quarterly_df = None
     fold_predictions_path = run_dir / "fold_predictions.csv"
     if fold_predictions_path.exists():
         fold_predictions = pd.read_csv(fold_predictions_path, parse_dates=["week_start"])
         model_oof = fold_predictions[fold_predictions["model"] == artifact["model_name"]]
         if not model_oof.empty and PROXY_COL in model_oof.columns and model_oof[PROXY_COL].notna().any():
             quarterly_residual_quantiles = compute_quarterly_residual_quantile_table(
+                fold_predictions, artifact["model_name"]
+            )
+        if not model_oof.empty:
+            oof_quarterly_df = aggregate_weekly_oof_predictions_to_quarterly(
                 fold_predictions, artifact["model_name"]
             )
 
@@ -63,7 +69,11 @@ if __name__ == "__main__":
         quarterly_forecast_df, outputs_dir=run_dir,
         period_col="forecast_quarter", filename="final_quarterly_forecast.csv",
     )
-    plot_final_forecast(quarterly_forecast_df, quarterly_history_df, outputs_dir=run_dir)
+    plot_final_forecast(
+        quarterly_forecast_df, quarterly_history_df,
+        oof_quarterly_df=oof_quarterly_df, outputs_dir=run_dir,
+    )
+    plot_forecast_vs_previous_year(quarterly_forecast_df, quarterly_history_df, outputs_dir=run_dir)
 
     print("\n=== Quarterly forecast (deliverable) ===")
     print(quarterly_forecast_df.to_string(index=False))
