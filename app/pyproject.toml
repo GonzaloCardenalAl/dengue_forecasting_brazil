@@ -1,12 +1,22 @@
 [project]
 name = "dengue-app"
 version = "0.1.0"
-description = "FastAPI backend serving dengue forecasts"
+description = "FastAPI backend and Streamlit dashboard (DORA) serving dengue forecasts"
 requires-python = ">=3.13"
-dependencies = ["dengue-core", "fastapi>=0.137.1", "uvicorn>=0.49.0"]
+dependencies = [
+    "dengue-core",
+    "dengue-ml",
+    "fastapi>=0.137.1",
+    "uvicorn>=0.49.0",
+    "streamlit>=1.50",
+    "plotly>=6.0",
+    "requests>=2.32",
+    "python-dotenv>=1.0",
+]
 
 [tool.uv.sources]
 dengue-core = { workspace = true }
+dengue-ml = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

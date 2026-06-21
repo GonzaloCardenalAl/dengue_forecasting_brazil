@@ -1,0 +1,228 @@
+"""Data access layer for the FastAPI backend.
+
+Reads ml pipeline outputs straight from the latest run dir under
+ml/results/, reusing dengue_ml's own path/aggregation helpers rather than
+re-implementing them here.
+"""
+
+import os
+from functools import lru_cache
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from fastapi import HTTPException
+
+from dengue_ml.config import CITY_COL, DENGUE_FILE
+from dengue_ml.data_refresh import refresh_dengue_data
+from dengue_ml.forecasting.pipeline import run_inference
+from dengue_ml.forecasting.quarterly_aggregation import (
+    aggregate_weekly_classifier_to_quarterly,
+    aggregate_weekly_forecast_to_monthly,
+    aggregate_weekly_history_to_monthly,
+    aggregate_weekly_history_to_quarterly,
+    aggregate_weekly_oof_predictions_to_quarterly,
+)
+from dengue_ml.preprocessing import prepare_model_table
+from dengue_ml.run_dir import get_latest_run_dir
+
+from dengue_app.risk import compute_risk_tier
+
+
+def get_run_dir() -> Path:
+    try:
+        return get_latest_run_dir()
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+
+
+def _read_csv(filename: str, parse_dates: list[str] | None = None) -> pd.DataFrame | None:
+    path = get_run_dir() / filename
+    if not path.exists():
+        return None
+    return pd.read_csv(path, parse_dates=parse_dates)
+
+
+@lru_cache(maxsize=1)
+def _weekly_table_cached(run_dir_key: str, raw_csv_mtime: float) -> pd.DataFrame:
+    """Shared cache for `prepare_model_table()` -- everything below keys off
+    the same (run dir, raw CSV mtime) pair, so one cache entry covers
+    history, seasonal profile, and population instead of re-reading the raw
+    CSVs once per consumer."""
+    return prepare_model_table()
+
+
+def _weekly_table() -> pd.DataFrame:
+    return _weekly_table_cached(str(get_run_dir()), os.path.getmtime(DENGUE_FILE))
+
+
+@lru_cache(maxsize=1)
+def _history_quarterly_cached(run_dir_key: str, raw_csv_mtime: float) -> pd.DataFrame:
+    return aggregate_weekly_history_to_quarterly(_weekly_table_cached(run_dir_key, raw_csv_mtime))
+
+
+def load_history_quarterly() -> pd.DataFrame:
+    """Actual quarterly case counts (city_name, quarter_start, casos_est, ...).
+    Cached per (run dir, raw CSV mtime) -- recomputed when a new pipeline run
+    completes OR the raw CSV is refreshed in place (see refresh_and_reforecast)."""
+    return _history_quarterly_cached(str(get_run_dir()), os.path.getmtime(DENGUE_FILE))
+
+
+@lru_cache(maxsize=1)
+def _history_monthly_cached(run_dir_key: str, raw_csv_mtime: float) -> pd.DataFrame:
+    return aggregate_weekly_history_to_monthly(_weekly_table_cached(run_dir_key, raw_csv_mtime))
+
+
+def load_history_monthly() -> pd.DataFrame:
+    """Actual monthly case counts (city_name, month_start, casos_est,
+    p_inc100k) -- higher-resolution twin of load_history_quarterly(), same
+    caching."""
+    return _history_monthly_cached(str(get_run_dir()), os.path.getmtime(DENGUE_FILE))
+
+
+@lru_cache(maxsize=1)
+def _seasonal_profile_cached(run_dir_key: str, raw_csv_mtime: float) -> pd.DataFrame:
+    """Per-(city, season) summed incidence, grouped Q4->Q1->Q2->Q3 instead of
+    calendar-year so each season's case rise-and-fall arc plots as one
+    unbroken line (see ml/notebooks figure 09 this mirrors). Local to this
+    chart -- doesn't reintroduce a global epidemic-year concept elsewhere."""
+    df = _weekly_table_cached(run_dir_key, raw_csv_mtime).copy()
+    quarter_of_year = df["week_start"].dt.quarter
+    df["season_year"] = np.where(quarter_of_year >= 4, df["week_start"].dt.year, df["week_start"].dt.year - 1)
+    df["season_quarter_pos"] = quarter_of_year.map({4: 1, 1: 2, 2: 3, 3: 4})
+
+    agg = (
+        df.groupby([CITY_COL, "season_year", "season_quarter_pos"], sort=True)
+        .agg(p_inc100k=("p_inc100k", "sum"), any_epidemic_week=("nivel_inc", lambda s: (s == 2).any()))
+        .reset_index()
+    )
+    is_epidemic_season = (
+        agg.groupby([CITY_COL, "season_year"])["any_epidemic_week"].any().rename("is_epidemic_season")
+    )
+    return agg.merge(is_epidemic_season, on=[CITY_COL, "season_year"]).drop(columns="any_epidemic_week")
+
+
+def load_seasonal_profile(city: str | None = None) -> pd.DataFrame:
+    """Annual quarterly profile (city_name, season_year, season_quarter_pos,
+    p_inc100k, is_epidemic_season) for the Q4->Q1->Q2->Q3 seasonal chart.
+    Cached the same way as load_history_quarterly()."""
+    df = _seasonal_profile_cached(str(get_run_dir()), os.path.getmtime(DENGUE_FILE))
+    if city is not None:
+        df = df[df[CITY_COL] == city]
+    return df.sort_values([CITY_COL, "season_year", "season_quarter_pos"]).reset_index(drop=True)
+
+
+def load_city_population() -> dict[str, float]:
+    """Latest known population per city (pop is slowly-varying in the raw
+    weekly data, so the most recent value is a fine stand-in for "current").
+    Used to convert forecasted case counts to incidence per 100k, since the
+    forecast pipeline itself only outputs raw case counts."""
+    weekly = _weekly_table()
+    return weekly.sort_values("week_start").groupby(CITY_COL)["pop"].last().to_dict()
+
+
+def refresh_and_reforecast() -> dict:
+    """Fetch the latest InfoDengue data and re-run inference (NOT retraining)
+    with whatever model is currently in the latest run dir. Called by the
+    /admin/refresh endpoint."""
+    refresh_summary = refresh_dengue_data()
+    run_dir = get_run_dir()
+    _weekly_df, quarterly_df = run_inference(run_dir)
+    return {
+        **refresh_summary,
+        "model_name": quarterly_df["model_name"].iloc[0] if not quarterly_df.empty else None,
+        "forecast_quarters": sorted(
+            quarterly_df["forecast_quarter"].dt.strftime("%Y-%m-%d").unique().tolist()
+        ),
+    }
+
+
+def load_quarterly_forecast() -> pd.DataFrame:
+    df = _read_csv("final_quarterly_forecast.csv", parse_dates=["forecast_quarter"])
+    if df is None:
+        raise HTTPException(
+            status_code=503,
+            detail="final_quarterly_forecast.csv not found in the latest run -- "
+                   "has generate_forecasts.py completed for this run?",
+        )
+    return df
+
+
+def load_monthly_forecast() -> pd.DataFrame:
+    """Monthly twin of load_quarterly_forecast(), built on the fly from the
+    weekly forecast (no monthly forecast CSV is persisted by the pipeline).
+    No horizon-bucketed quantile table is passed in, so lower_95/upper_95
+    come back NaN -- fine here since the dashboard only uses this for point
+    incidence values, not a CI band."""
+    df = _read_csv("final_weekly_forecast.csv", parse_dates=["forecast_week"])
+    if df is None:
+        raise HTTPException(
+            status_code=503,
+            detail="final_weekly_forecast.csv not found in the latest run -- "
+                   "has generate_forecasts.py completed for this run?",
+        )
+    return aggregate_weekly_forecast_to_monthly(df, horizon_bucketed_quantiles=None)
+
+
+def load_classifier_model_name() -> str | None:
+    path = get_run_dir() / "selected_classifier.txt"
+    return path.read_text().strip() if path.exists() else None
+
+
+def load_backtest_quarterly(model_name: str | None = None) -> pd.DataFrame:
+    """Quarterly OOF backtest: predicted vs actual cases, plus the OOF
+    classifier's epidemic status for the same quarters."""
+    fold_predictions = _read_csv("fold_predictions.csv", parse_dates=["week_start"])
+    if fold_predictions is None:
+        raise HTTPException(status_code=503, detail="fold_predictions.csv not found in the latest run.")
+
+    if model_name is None:
+        model_name = load_quarterly_forecast()["model_name"].iloc[0]
+
+    predicted_q = aggregate_weekly_oof_predictions_to_quarterly(fold_predictions, model_name)
+
+    model_rows = fold_predictions[fold_predictions["model"] == model_name].copy()
+    model_rows["quarter_start"] = pd.PeriodIndex(model_rows["week_start"], freq="Q").to_timestamp()
+    actual_q = (
+        model_rows.groupby([CITY_COL, "quarter_start"], sort=True)["casos_est"]
+        .sum()
+        .reset_index()
+    )
+
+    merged = predicted_q.merge(actual_q, on=[CITY_COL, "quarter_start"], how="left")
+
+    clf_model_name = load_classifier_model_name()
+    fold_predictions_clf = _read_csv("fold_predictions_clf.csv", parse_dates=["week_start"])
+    if clf_model_name is not None and fold_predictions_clf is not None and not fold_predictions_clf.empty:
+        clf_q = aggregate_weekly_classifier_to_quarterly(fold_predictions_clf, clf_model_name)
+        merged = merged.merge(clf_q, on=[CITY_COL, "quarter_start"], how="left")
+    else:
+        merged["predicted_proba"] = pd.NA
+        merged["is_epidemic"] = pd.NA
+
+    return merged
+
+
+def risk_tier_for(city: str, predicted_cases: float, epidemic_proba: float | None) -> str:
+    history = load_history_quarterly()
+    city_history = history.loc[history[CITY_COL] == city, "casos_est"]
+    return compute_risk_tier(predicted_cases, city_history, epidemic_proba)
+
+
+def filter_by_date_range(
+    df: pd.DataFrame, date_col: str, start: str | None, end: str | None
+) -> pd.DataFrame:
+    if start is not None:
+        df = df[df[date_col] >= pd.Timestamp(start)]
+    if end is not None:
+        df = df[df[date_col] <= pd.Timestamp(end)]
+    return df
+
+
+def records(df: pd.DataFrame) -> list[dict]:
+    """JSON-safe records: Timestamps -> ISO date strings, NaN/NaT -> None."""
+    out = df.copy()
+    for col in out.columns:
+        if pd.api.types.is_datetime64_any_dtype(out[col]):
+            out[col] = out[col].dt.strftime("%Y-%m-%d")
+    return out.astype(object).where(out.notna(), None).to_dict(orient="records")

@@ -20,21 +20,21 @@ def add_target_lag_features(
 
     log_s = df.assign(_log=log_target).groupby(group_col, sort=False)["_log"]
 
-    df["cases_lag_1q"] = log_s.shift(1).values
-    df["cases_lag_2q"] = log_s.shift(2).values
-    df["cases_lag_4q"] = log_s.shift(4).values
+    df["cases_lag_13w"] = log_s.shift(13).values
+    df["cases_lag_26w"] = log_s.shift(26).values
+    df["cases_lag_52w"] = log_s.shift(52).values
 
-    df["cases_rolling_mean_2q"] = log_s.shift(1).transform(
-        lambda x: x.rolling(2, min_periods=1).mean()
+    df["cases_rolling_mean_26w"] = log_s.shift(1).transform(
+        lambda x: x.rolling(26, min_periods=1).mean()
     ).values
-    df["cases_rolling_mean_4q"] = log_s.shift(1).transform(
-        lambda x: x.rolling(4, min_periods=1).mean()
+    df["cases_rolling_mean_52w"] = log_s.shift(1).transform(
+        lambda x: x.rolling(52, min_periods=1).mean()
     ).values
-    df["cases_rolling_std_4q"] = log_s.shift(1).transform(
-        lambda x: x.rolling(4, min_periods=2).std()
+    df["cases_rolling_std_52w"] = log_s.shift(1).transform(
+        lambda x: x.rolling(52, min_periods=2).std()
     ).values
 
-    df["cases_growth_1q"] = df["cases_lag_1q"] - df["cases_lag_2q"]
-    df["cases_growth_4q"] = df["cases_lag_1q"] - log_s.shift(5).values
+    df["cases_growth_13w"] = df["cases_lag_13w"] - df["cases_lag_26w"]
+    df["cases_growth_52w"] = df["cases_lag_13w"] - log_s.shift(65).values
 
     return df

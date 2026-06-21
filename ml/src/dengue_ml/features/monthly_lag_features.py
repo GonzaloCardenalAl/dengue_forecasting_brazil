@@ -14,19 +14,22 @@ def _global_monthly_arrays(value_col: str) -> tuple[np.ndarray, np.ndarray]:
 
 @lru_cache(maxsize=None)
 def _month_window_features(
-    quarter_start: pd.Timestamp,
+    cutoff: pd.Timestamp,
     value_col: str,
     prefix: str,
     n_months: int,
     log_transform: bool,
 ) -> dict:
     """
-    SST/ENSO is one global series (same value for every city in a given month),
-    so this only needs to be cached per quarter — not per (city, quarter) like
-    the weekly cases/climate windows — making it even cheaper.
+    SST/ENSO is one global series (same value regardless of city/week), so
+    this only needs to be cached per distinct cutoff value -- not per
+    (city, week) like the weekly cases/climate windows -- making it even
+    cheaper. cutoff is the row's own week_start; cached granularity is
+    therefore per-week now rather than per-month, but the underlying SST
+    series and "months strictly before cutoff" logic are unchanged.
     """
     dates, vals_all = _global_monthly_arrays(value_col)
-    qstart = np.datetime64(quarter_start)
+    qstart = np.datetime64(cutoff)
     vals = vals_all[dates < qstart][-n_months:]
     if log_transform:
         vals = np.log1p(vals)
@@ -47,23 +50,25 @@ def _month_window_features(
 
 
 def add_monthly_lag_features(
-    quarterly_df: pd.DataFrame,
+    df: pd.DataFrame,
     value_col: str,
     prefix: str,
     n_months: int,
     log_transform: bool = False,
 ) -> pd.DataFrame:
     """
-    Last-N-months raw values before each quarter (t-1 = most recent month),
-    plus month-over-month growth/acceleration.
+    Last-N-months raw values before each row's own containing month (t-1 =
+    most recent month), plus month-over-month growth/acceleration.
 
-    Quarter-bucketed lags (lag_1q=3mo, lag_2q=6mo) straddle right past the
-    EDA-identified peak ENSO->dengue correlation at a 4-month lag, averaging it
-    away. Monthly resolution — SST's native granularity — captures it directly.
+    Gives the model SST's actual recent trajectory at its native monthly
+    resolution, rather than relying solely on the coarser 13w/26w/52w
+    aggregate lags in sst_features.py. df is the weekly model table -- each
+    row's own week_start is used to derive "before this row's containing
+    month", since SST genuinely has no weekly source data.
     """
-    df = quarterly_df.reset_index(drop=True).copy()
+    df = df.reset_index(drop=True).copy()
     records = [
-        _month_window_features(row["quarter_start"], value_col, prefix, n_months, log_transform)
+        _month_window_features(row["week_start"], value_col, prefix, n_months, log_transform)
         for _, row in df.iterrows()
     ]
     feat_df = pd.DataFrame(records, index=df.index)

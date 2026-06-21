@@ -7,15 +7,12 @@ from dengue_ml.config import (
 )
 from dengue_ml.features.feature_pipeline import build_features_for_split
 from dengue_ml.models.baseline import seasonal_naive_forecast
-from dengue_ml.models.sarima import tune_sarima, fit_sarima, forecast_sarima
+from dengue_ml.models.sarima import tune_sarima, fit_sarima, forecast_sarima, fourier_terms
 from dengue_ml.models.xgboost_models import train_xgb, predict_xgb
 from dengue_ml.models.xrfm_models import train_xrfm, predict_xrfm
 from dengue_ml.training.hyperparameter_search import random_search_xgb, random_search_xrfm
 from dengue_ml.validation.time_splits import make_outer_splits, make_inner_splits
 from dengue_ml.validation.metrics import calculate_all_metrics
-from dengue_ml.validation.conditional_residuals import (
-    assign_loFo_conditional_ci, PROXY_COL, PROXY_SOURCE_FEATURE,
-)
 
 
 def run_nested_cv(
@@ -28,7 +25,7 @@ def run_nested_cv(
     Returns
     -------
     fold_metrics     : one row per (fold, model, city)
-    fold_predictions : one row per (fold, model, city, quarter)
+    fold_predictions : one row per (fold, model, city, week)
     best_hyperparams : one row per (fold, model)
     """
     outer_splits = make_outer_splits(df)
@@ -38,8 +35,8 @@ def run_nested_cv(
 
     for fold_idx, (outer_train, outer_test) in enumerate(outer_splits):
         print(f"\n=== Outer fold {fold_idx + 1}/{len(outer_splits)} "
-              f"(test: {outer_test['quarter_start'].min().date()} – "
-              f"{outer_test['quarter_start'].max().date()}) ===")
+              f"(test: {outer_test['week_start'].min().date()} – "
+              f"{outer_test['week_start'].max().date()}) ===")
 
         inner_splits = make_inner_splits(outer_train)
 
@@ -56,8 +53,8 @@ def run_nested_cv(
 
             # Merge predictions with ground truth
             preds_df = preds_df.merge(
-                outer_test[[CITY_COL, "quarter_start", TARGET]],
-                on=[CITY_COL, "quarter_start"],
+                outer_test[[CITY_COL, "week_start", TARGET]],
+                on=[CITY_COL, "week_start"],
                 how="left",
             )
             preds_df["fold"]  = fold_idx + 1
@@ -83,10 +80,11 @@ def run_nested_cv(
     fold_predictions = pd.concat(all_preds, ignore_index=True) if all_preds else pd.DataFrame()
     best_hyperparams = pd.DataFrame(all_hparams)
 
-    if not fold_predictions.empty and PROXY_COL in fold_predictions.columns:
-        for model_name in fold_predictions.loc[fold_predictions[PROXY_COL].notna(), "model"].unique():
-            fold_predictions = assign_loFo_conditional_ci(fold_predictions, model_name)
-
+    # growth_proxy (the epidemic classifier's predicted probability) isn't
+    # available here -- it comes from a separate classifier nested CV run.
+    # train_pipeline.py joins it in afterward (conditional_residuals.
+    # attach_classifier_proxy) and re-runs assign_loFo_conditional_ci once
+    # growth_proxy is actually populated.
     return fold_metrics, fold_predictions, best_hyperparams
 
 
@@ -100,7 +98,7 @@ def _run_one_model(
 
     if model_name == "baseline":
         result = seasonal_naive_forecast(outer_train, outer_test)
-        return result[[CITY_COL, "quarter_start", "predicted"]], {}
+        return result[[CITY_COL, "week_start", "predicted"]], {}
 
     if model_name == "sarima":
         city_preds = []
@@ -111,21 +109,25 @@ def _run_one_model(
             if city_train.empty or city_test.empty:
                 continue
 
-            order, sorder = tune_sarima(city_train, inner_splits, city=city)
+            order, k = tune_sarima(city_train, inner_splits, city=city)
             train_s = (
-                city_train.set_index("quarter_start")[TARGET].sort_index()
+                city_train.set_index("week_start")[TARGET].sort_index()
             )
-            result = fit_sarima(np.log1p(train_s), order, sorder)
-            preds_log, lower_log, upper_log = forecast_sarima(result, horizon=len(city_test))
+            train_exog = fourier_terms(train_s.index, k)
+            result = fit_sarima(np.log1p(train_s), order, exog=train_exog)
+            test_exog = fourier_terms(pd.DatetimeIndex(city_test["week_start"]), k)
+            preds_log, lower_log, upper_log = forecast_sarima(
+                result, horizon=len(city_test), exog=test_exog
+            )
             preds = np.expm1(preds_log)
 
-            city_df = city_test[[CITY_COL, "quarter_start"]].copy()
+            city_df = city_test[[CITY_COL, "week_start"]].copy()
             city_df["predicted"] = preds
             city_df["lower_95"]  = np.expm1(lower_log)
             city_df["upper_95"]  = np.expm1(upper_log)
             city_preds.append(city_df)
-            city_hparams[f"{city}_order"]  = str(order)
-            city_hparams[f"{city}_sorder"] = str(sorder)
+            city_hparams[f"{city}_order"]         = str(order)
+            city_hparams[f"{city}_fourier_order"] = k
 
         return pd.concat(city_preds, ignore_index=True), city_hparams
 
@@ -142,10 +144,9 @@ def _run_one_model(
 
         preds_df = meta_te.copy()
         preds_df["predicted"]  = preds
-        # CI is calibrated later (in run_nested_cv, across all folds at once) from
-        # this model's own OOF residuals, conditioned on growth_proxy — see
-        # conditional_residuals.py. lower_95/upper_95 filled in there.
-        preds_df[PROXY_COL] = X_te[PROXY_SOURCE_FEATURE].values
+        # growth_proxy/lower_95/upper_95 are filled in later, after the
+        # classifier proxy has been joined in — see
+        # conditional_residuals.attach_classifier_proxy and train_pipeline.py.
         return preds_df, best_params
 
     if model_name.startswith("xrfm"):
@@ -154,7 +155,7 @@ def _run_one_model(
         # xRFM's fit() requires a held-out X_val/y_val (used internally for
         # early stopping), unlike XGBoost which trains on 100% of outer_train.
         # inner_splits' last entry is exactly "all-but-the-most-recent-horizon-
-        # quarters vs. the most-recent-horizon-quarters" — reuse it instead of
+        # weeks vs. the most-recent-horizon-weeks" — reuse it instead of
         # carving a separate split. This means xRFM's kernel regression only
         # sees train_tail as support points (slightly less history than
         # XGBoost gets), an inherent consequence of the required val split.
@@ -181,7 +182,6 @@ def _run_one_model(
 
         preds_df = meta_te.copy()
         preds_df["predicted"] = preds
-        preds_df[PROXY_COL] = X_te[PROXY_SOURCE_FEATURE].values
         return preds_df, best_params
 
     raise ValueError(f"Unknown model_name '{model_name}'.")

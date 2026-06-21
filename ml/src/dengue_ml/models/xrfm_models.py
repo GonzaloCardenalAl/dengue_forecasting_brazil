@@ -50,7 +50,36 @@ class _ScaledXRFM:
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
         X_scaled = self.scaler.transform(X.to_numpy(dtype="float32"))
+        # Clip to a fixed z-score range before the kernel ever sees it. The
+        # Laplace kernel/AGOP metric has no defined ceiling for inputs far
+        # outside the training distribution -- unlike XGBoost's trees, which
+        # can only ever output a value seen in some training leaf. This
+        # matters specifically during autoregressive rollouts: each step's
+        # prediction is fed back as next step's lag feature, so if a
+        # prediction drifts even slightly out of range, the next step's
+        # input drifts further, and a kernel without an extrapolation
+        # ceiling can compound that into an unbounded blowup (observed:
+        # predictions reaching ~10M cases against actuals in the hundreds).
+        # No-op for in-distribution data (normal nested CV, early rollout
+        # steps), since real features essentially never reach |z| = 5.
+        X_scaled = np.clip(X_scaled, -5.0, 5.0)
         return self.model.predict(X_scaled)
+
+    @property
+    def feature_importances_(self) -> np.ndarray:
+        """
+        RFM has no split-gain importance like XGBoost; the analogous quantity
+        is the diagonal of the learned AGOP (Mahalanobis) matrix M, which
+        measures how much the kernel stretches each (standardized) input
+        direction. Averaged across leaf RFMs (config has get_agop_best_model
+        always True -- see model_training.yaml) and normalized to sum to 1,
+        same convention as XGBoost's feature_importances_, so the existing
+        reporting code works unmodified.
+        """
+        agops = self.model.collect_best_agops()
+        diags = [agop if agop.ndim == 1 else torch.diagonal(agop) for agop in agops]
+        importances = torch.stack(diags).mean(dim=0).cpu().numpy()
+        return importances / importances.sum()
 
 
 def train_xrfm(

@@ -1,0 +1,5 @@
+candidate,precision,recall,f1,auc,coverage,n_high_regime,n_low_regime
+nivel_inc,0.924,0.924,0.924,,0.938,380.0,1708.0
+sustained_rt,0.578,0.392,0.467,,0.947,258.0,1830.0
+logreg,0.734,0.855,0.79,0.944,0.94,443.0,1645.0
+xgb_clf,0.765,0.813,0.788,0.939,0.939,404.0,1684.0

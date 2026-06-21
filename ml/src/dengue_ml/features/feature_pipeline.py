@@ -1,43 +1,68 @@
+import re
+import unicodedata
 import numpy as np
 import pandas as pd
 from typing import Optional
 
-from dengue_ml.config import TARGET, CITY_COL
+from dengue_ml.config import TARGET, CITY_COL, CITIES
 from dengue_ml.features.temporal_features import add_temporal_features
 from dengue_ml.features.target_lag_features import add_target_lag_features
 from dengue_ml.features.climate_features import add_climate_features
 from dengue_ml.features.sst_features import add_sst_features
 from dengue_ml.features.weekly_lag_features import add_weekly_lag_features
 from dengue_ml.features.monthly_lag_features import add_monthly_lag_features
+from dengue_ml.features.forecast_proxies import last_val, climatological_val
 
-# Lookback windows for week-level lag features (replaces quarter-level raw lags
-# cases_lag_1q/2q/4q and temp/humid_lag_1q/2q with the actual weekly trajectory).
-N_WEEKS_CASES   = 12  # ~1 quarter of weekly resolution
+# Lookback windows for week-level lag features (supplements the coarser raw
+# aggregate lags cases_lag_13w/26w/52w and temp/humid_lag_13w/26w in
+# target_lag_features.py/climate_features.py with the actual weekly trajectory).
+N_WEEKS_CASES   = 12  # ~3 months of weekly resolution
 N_WEEKS_CLIMATE = 8
 
-# SST is published monthly natively; quarter-bucketed lags (lag_1q=3mo, lag_2q=6mo)
-# straddle past the EDA-identified peak ENSO->dengue correlation at lag 4 months.
+# SST is published monthly natively; this gives the model the raw recent
+# trajectory rather than relying solely on the coarser 3m/6m/12m aggregate
+# lags in sst_features.py.
 N_MONTHS_SST = 6
 
-# InfoDengue's own surveillance status fields (transmission/receptivity/alert
-# level/Rt), at week-level resolution -- same rationale as the cases/climate
-# windows above: the actual recent trajectory, not a single quarterly summary.
+# InfoDengue's own Rt-derived surveillance fields, at week-level resolution
+# -- same rationale as the cases/climate windows above: the actual recent
+# trajectory, not a single monthly summary.
+#
+# transmissao/receptivo/nivel_inc are deliberately NOT here, even though
+# they're in the raw InfoDengue feed: they're outputs of InfoDengue's own
+# internal alert classifier with no documented formula, so there is no way
+# to compute them for the forecast horizon (unlike Rt/p_rt1, which we can
+# estimate forward via features/rt_estimation.py). Carrying them forward flat
+# for a year would be indefensible, so they're excluded from feature
+# engineering entirely. nivel_inc is still kept (just not as a lag feature
+# here) as the epidemic classifier's label -- see build_classification_features.
 N_WEEKS_ALERT = 8  # matches N_WEEKS_CLIMATE
 _ALERT_VALUE_COLS = [
-    ("nivel_inc", "nivel_inc"), ("transmissao", "transmissao"),
-    ("receptivo", "receptivo"), ("Rt", "rt"), ("p_rt1", "p_rt1"),
-    ("sustained_rt", "sustained_rt"),
+    ("Rt", "rt"), ("p_rt1", "p_rt1"), ("sustained_rt", "sustained_rt"),
 ]
 
 # Feature columns for each set (populated at end of module)
 FEATURE_COLS: dict[str, list[str]] = {}
 
+
+def _slugify_city(name: str) -> str:
+    ascii_name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"[^a-z0-9]+", "_", ascii_name.lower()).strip("_")
+
+
+# One-hot city indicator, computed straight from CITY_COL (not a fitted
+# encoding) -- pooled models otherwise have no way to learn a per-city
+# baseline/offset, only what's implicit in lag-feature magnitudes. CITIES is
+# the full fixed list of 4 cities, so every split sees the same dummy
+# columns regardless of which cities happen to be present in it.
+_CITY_COLS = [f"city_is_{_slugify_city(c)}" for c in CITIES]
+
 _TEMPORAL_COLS = [
-    "year", "quarter", "time_index", "quarter_sin", "quarter_cos",
+    "year", "week", "time_index", "week_sin", "week_cos",
 ]
 _TARGET_LAG_COLS = [
-    "cases_rolling_mean_2q", "cases_rolling_mean_4q", "cases_rolling_std_4q",
-    "cases_growth_1q", "cases_growth_4q",
+    "cases_rolling_mean_26w", "cases_rolling_mean_52w", "cases_rolling_std_52w",
+    "cases_growth_13w", "cases_growth_52w",
 ]
 _WEEKLY_CASES_COLS = (
     [f"cases_week_t-{i}" for i in range(1, N_WEEKS_CASES + 1)]
@@ -45,7 +70,7 @@ _WEEKLY_CASES_COLS = (
 )
 _CLIMATE_COLS = [
     "tempmed", "humidmed",
-    "temp_rolling_mean_2q", "humid_rolling_mean_2q",
+    "temp_rolling_mean_26w", "humid_rolling_mean_26w",
     "temp_anomaly", "humid_anomaly",
 ]
 _WEEKLY_CLIMATE_COLS = (
@@ -69,7 +94,7 @@ _WEEKLY_ALERT_COLS = [
 ]
 
 FEATURE_COLS["cases_only"] = (
-    _TEMPORAL_COLS + _TARGET_LAG_COLS + _WEEKLY_CASES_COLS + _WEEKLY_ALERT_COLS
+    _CITY_COLS + _TEMPORAL_COLS + _TARGET_LAG_COLS + _WEEKLY_CASES_COLS + _WEEKLY_ALERT_COLS
 )
 FEATURE_COLS["cases_climate"] = (
     FEATURE_COLS["cases_only"] + _CLIMATE_COLS + _WEEKLY_CLIMATE_COLS
@@ -93,11 +118,15 @@ def _build_feature_matrix(
                      all original columns, e.g. `nivel_inc`, for the caller to
                      derive its own `y` from)
     X             : feature DataFrame (cols restricted to `feature_set`)
-    meta          : city + quarter_start columns (for reporting)
+    meta          : city + week_start columns (for reporting)
     climate_stats : fit_stats to reuse at inference (None for cases_only)
     """
     if feature_set not in FEATURE_COLS:
         raise ValueError(f"Unknown feature_set '{feature_set}'. Choose from {list(FEATURE_COLS)}")
+
+    df = df.copy()
+    for city, col in zip(CITIES, _CITY_COLS):
+        df[col] = (df[CITY_COL] == city).astype(int)
 
     df = add_temporal_features(df)
     df = add_target_lag_features(df)
@@ -108,6 +137,14 @@ def _build_feature_matrix(
     for value_col, prefix in _ALERT_VALUE_COLS:
         df = add_weekly_lag_features(df, value_col=value_col, prefix=prefix, n_weeks=N_WEEKS_ALERT)
 
+    # nivel_inc_week_t-1 is kept as a side channel (NOT added to FEATURE_COLS,
+    # so it never reaches the cases-forecasting or classifier models as an
+    # input) purely for the nivel_inc_rule benchmark comparison in
+    # nested_cv_classifier.py / proxy_comparison_table -- both only need the
+    # last *observed* value, which this lag already is.
+    if "nivel_inc" in df.columns:
+        df["nivel_inc_week_t-1"] = df.groupby(CITY_COL, sort=False)["nivel_inc"].shift(1)
+
     returned_climate_stats = None
     if feature_set in ("cases_climate", "cases_climate_sst"):
         df, returned_climate_stats = add_climate_features(df, fit_stats=climate_fit_stats)
@@ -115,7 +152,7 @@ def _build_feature_matrix(
             df, value_col="tempmed", prefix="temp", n_weeks=N_WEEKS_CLIMATE,
         )
         df = add_weekly_lag_features(
-            df, value_col="umidmed", prefix="humid", n_weeks=N_WEEKS_CLIMATE,
+            df, value_col="humidmed", prefix="humid", n_weeks=N_WEEKS_CLIMATE,
         )
 
     if feature_set == "cases_climate_sst":
@@ -125,11 +162,14 @@ def _build_feature_matrix(
         )
 
     cols = FEATURE_COLS[feature_set]
-    # Drop rows with NaNs in feature columns (first quarters lack lag history)
+    # Drop rows with NaNs in feature columns (first months lack lag history)
     df_clean = df.dropna(subset=cols).copy()
 
     X    = df_clean[cols]
-    meta = df_clean[[CITY_COL, "quarter_start"]].reset_index(drop=True)
+    meta_cols = [CITY_COL, "week_start"]
+    if "nivel_inc_week_t-1" in df_clean.columns:
+        meta_cols.append("nivel_inc_week_t-1")
+    meta = df_clean[meta_cols].reset_index(drop=True)
 
     return df_clean.reset_index(drop=True), X.reset_index(drop=True), meta, returned_climate_stats
 
@@ -144,7 +184,7 @@ def build_features(
 
     Parameters
     ----------
-    df : quarterly model table (output of prepare_model_table)
+    df : weekly model table (output of prepare_model_table)
     feature_set : one of 'cases_only', 'cases_climate', 'cases_climate_sst'
     climate_fit_stats : pre-computed city means for climate anomaly.
                         None → compute from df (training mode).
@@ -153,7 +193,7 @@ def build_features(
     -------
     X            : feature DataFrame
     y            : log1p(casos_est) Series
-    meta         : city + quarter_start columns (for reporting)
+    meta         : city + week_start columns (for reporting)
     climate_stats: fit_stats to reuse at inference (None for cases_only)
     """
     df_clean, X, meta, returned_climate_stats = _build_feature_matrix(df, feature_set, climate_fit_stats)
@@ -168,21 +208,74 @@ def build_classification_features(
 ) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, Optional[pd.DataFrame]]:
     """
     Same leak-free feature columns as `build_features`, but with the binary
-    "epidemic this quarter" label (`nivel_inc == 2`, the quarterly max already
-    computed by `aggregate_dengue_to_quarterly` from weeks *within* the target
-    quarter -- valid as a label, never used as a feature) instead of
+    "epidemic this week" label (`nivel_inc == 2`, InfoDengue's own
+    week-level alert level -- valid as a label, never used as a feature)
+    instead of
     log1p(casos_est).
 
     Returns
     -------
     X            : feature DataFrame (identical columns to build_features)
-    y            : binary is_epidemic Series (1 = nivel_inc==2 this quarter)
-    meta         : city + quarter_start columns (for reporting)
+    y            : binary is_epidemic Series (1 = nivel_inc==2 this week)
+    meta         : city + week_start columns (for reporting)
     climate_stats: fit_stats to reuse at inference (None for cases_only)
     """
     df_clean, X, meta, returned_climate_stats = _build_feature_matrix(df, feature_set, climate_fit_stats)
     y = (df_clean["nivel_inc"] == 2).astype(int)
     return X, y.reset_index(drop=True), meta, returned_climate_stats
+
+
+# Raw, unlagged exogenous columns that appear directly in FEATURE_COLS
+# (_CLIMATE_COLS / _SST_COLS above) for the row's *own* week/month -- the one
+# place a 1-step CV split can hand the model an oracle's view of the future
+# that the real forecast loop (forecasting/autoregressive.py) never has. Any
+# *lagged* derivative of these (temp_lag_13w, nino34_month_t-1, ...) already
+# only reads values strictly before the row's own week/month, so those are
+# unaffected and untouched here.
+_EVAL_CLIMATOLOGICAL_COLS = ["tempmed", "humidmed"]
+_EVAL_CARRY_FORWARD_COLS = ["nino34_anom"]
+
+
+def _make_eval_window_deployment_realistic(
+    train_df: pd.DataFrame, eval_df: pd.DataFrame
+) -> pd.DataFrame:
+    """
+    Overwrite eval_df's contemporaneous climate/SST columns with the same
+    stand-ins the real forecast loop uses for a not-yet-observed week
+    (forecasting/autoregressive.py's `_climatological_val`/`_last_val`),
+    computed from train_df history only.
+
+    Without this, a 1-step nested-CV/hyperparameter-search split evaluates
+    the model as if it already knew the real temperature/humidity/SST for
+    the week it's forecasting -- real for *training* (the past is known),
+    but never true at actual forecast time, where every horizon week's
+    climate/SST is unknown and approximated the same way. Left unfixed, this
+    silently inflates climate-feature models' apparent CV performance, and
+    narrows the OOF-residual-based CI bands below true deployment error.
+
+    Only mutates raw columns; `is_el_nino`/`is_la_nina`/`is_neutral` and any
+    lag/rolling/anomaly feature are recomputed downstream from these values,
+    so substituting here is sufficient. `cases_only` features never read
+    these columns, so this is a no-op for that feature set.
+    """
+    eval_df = eval_df.copy()
+
+    for city in eval_df[CITY_COL].unique():
+        city_mask = eval_df[CITY_COL] == city
+        for col in _EVAL_CLIMATOLOGICAL_COLS:
+            if col not in eval_df.columns:
+                continue
+            eval_df.loc[city_mask, col] = [
+                climatological_val(train_df, city, col, w)
+                for w in eval_df.loc[city_mask, "week_start"]
+            ]
+
+    for col in _EVAL_CARRY_FORWARD_COLS:
+        if col not in eval_df.columns:
+            continue
+        eval_df[col] = last_val(train_df, None, col)
+
+    return eval_df
 
 
 def build_features_for_split(
@@ -194,19 +287,26 @@ def build_features_for_split(
     Build (X_train, y_train, X_eval, y_eval, meta_eval, climate_stats) for a
     train/eval pair, where eval_df's lag features are computed using combined
     history (train_df + eval_df) so lags remain valid, then masked back down
-    to only eval_df's quarters. climate_fit_stats are always fit on train_df
+    to only eval_df's weeks. climate_fit_stats are always fit on train_df
     only (no leakage from eval_df's climate distribution).
+
+    eval_df's contemporaneous tempmed/humidmed/nino34_anom are first replaced
+    with deployment-realistic estimates (see
+    `_make_eval_window_deployment_realistic`) so the evaluation doesn't see
+    real future climate/SST it would never have at actual forecast time.
     """
     X_tr, y_tr, _, climate_stats = build_features(train_df, feature_set)
 
+    eval_df = _make_eval_window_deployment_realistic(train_df, eval_df)
+
     combined = pd.concat([train_df, eval_df], ignore_index=True).sort_values(
-        [CITY_COL, "quarter_start"]
+        [CITY_COL, "week_start"]
     )
     X_all, y_all, meta_all, _ = build_features(
         combined, feature_set, climate_fit_stats=climate_stats
     )
-    eval_quarters = set(eval_df["quarter_start"].unique())
-    eval_mask = meta_all["quarter_start"].isin(eval_quarters)
+    eval_weeks = set(eval_df["week_start"].unique())
+    eval_mask = meta_all["week_start"].isin(eval_weeks)
 
     X_eval    = X_all[eval_mask].reset_index(drop=True)
     y_eval    = y_all[eval_mask].reset_index(drop=True)
@@ -223,19 +323,22 @@ def build_classification_features_for_split(
     """
     Classification counterpart of `build_features_for_split` -- identical
     train/eval feature construction (combined-history lags, train-only climate
-    stats), but `y` is the binary is_epidemic label from
-    `build_classification_features` instead of log1p(casos_est).
+    stats, deployment-realistic eval-window climate/SST substitution), but
+    `y` is the binary is_epidemic label from `build_classification_features`
+    instead of log1p(casos_est).
     """
     X_tr, y_tr, _, climate_stats = build_classification_features(train_df, feature_set)
 
+    eval_df = _make_eval_window_deployment_realistic(train_df, eval_df)
+
     combined = pd.concat([train_df, eval_df], ignore_index=True).sort_values(
-        [CITY_COL, "quarter_start"]
+        [CITY_COL, "week_start"]
     )
     X_all, y_all, meta_all, _ = build_classification_features(
         combined, feature_set, climate_fit_stats=climate_stats
     )
-    eval_quarters = set(eval_df["quarter_start"].unique())
-    eval_mask = meta_all["quarter_start"].isin(eval_quarters)
+    eval_weeks = set(eval_df["week_start"].unique())
+    eval_mask = meta_all["week_start"].isin(eval_weeks)
 
     X_eval    = X_all[eval_mask].reset_index(drop=True)
     y_eval    = y_all[eval_mask].reset_index(drop=True)
