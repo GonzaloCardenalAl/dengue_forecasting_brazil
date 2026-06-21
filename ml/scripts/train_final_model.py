@@ -6,8 +6,11 @@ from dengue_ml.training.final_train import (
     train_final_model, select_best_model_with_ar_stability, train_final_classifier, select_best_classifier,
 )
 from dengue_ml.preprocessing import prepare_model_table
-from dengue_ml.reporting.plots import plot_feature_importance
-from dengue_ml.reporting.results_tables import feature_importance_table
+from dengue_ml.reporting.plots import (
+    plot_feature_importance, plot_oof_predictions, plot_oof_predictions_monthly,
+    plot_coverage_by_gap, plot_residual_distribution,
+)
+from dengue_ml.reporting.results_tables import feature_importance_table, coverage_by_gap_table
 
 if __name__ == "__main__":
     run_dir = get_latest_run_dir()
@@ -38,6 +41,21 @@ if __name__ == "__main__":
         )
     else:
         print(f"Best model: {best_model}  (median MAE = {selection_info['median_mae_1step']:.1f} cases)")
+
+    # run_nested_cv.py (Step 1) already plotted OOF/coverage/residual diagnostics,
+    # but for select_best_model's 1-step-only pick -- which can differ from
+    # best_model above once AR-rollout stability is folded in. Regenerate here
+    # for the model that's actually about to be trained and shipped, so the
+    # diagnostic figures on disk always match the production model.
+    if fold_predictions is not None:
+        plot_oof_predictions(fold_predictions, best_model, outputs_dir=run_dir, log_scale=False)
+        plot_oof_predictions(fold_predictions, best_model, outputs_dir=run_dir, log_scale=True)
+        plot_oof_predictions_monthly(fold_predictions, best_model, outputs_dir=run_dir, log_scale=False)
+        plot_oof_predictions_monthly(fold_predictions, best_model, outputs_dir=run_dir, log_scale=True)
+        coverage_gap = coverage_by_gap_table(fold_predictions, best_model, outputs_dir=run_dir)
+        plot_coverage_by_gap(coverage_gap, outputs_dir=run_dir)
+        plot_residual_distribution(fold_predictions, best_model, outputs_dir=run_dir)
+        print(f"OOF/coverage/residual diagnostics regenerated for '{best_model}'.")
 
     df = prepare_model_table()
     artifact = train_final_model(

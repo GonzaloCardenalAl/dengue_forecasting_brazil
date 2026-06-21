@@ -1,0 +1,9 @@
+.git
+.venv
+__pycache__
+*.pyc
+logs/
+presentation/
+NOTEBOOK.md.lock
+ml/results/run_2*
+ml/results/run_demo

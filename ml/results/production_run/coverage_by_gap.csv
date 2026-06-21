@@ -1,0 +1,6 @@
+city_name,coverage_including_gap,coverage_excluding_gap,n_rows,n_gap_rows
+Belo Horizonte,0.975,0.975,120,0
+Rio de Janeiro,0.9667,0.9667,120,0
+São Paulo,0.95,0.95,120,0
+Vitória,0.8917,0.9817,120,11
+Overall,0.9458,0.968,480,11

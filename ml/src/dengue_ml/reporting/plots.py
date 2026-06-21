@@ -492,7 +492,7 @@ def plot_validation_rollout(
     if has_ci:
         ax.fill_between(
             pr[date_col], _log_floor(pr["lower_95"]), _log_floor(pr["upper_95"]),
-            alpha=0.2, color="red", label="95% CI (autoregressive)",
+            alpha=0.2, color="red", label="Calibrated CI (autoregressive)",
         )
     ax.plot(
         pr[date_col], _log_floor(pr["value"]), color="red", linestyle="--",
@@ -600,7 +600,7 @@ def plot_validation_rollout_grid(
         if has_ci:
             ax.fill_between(
                 pr[date_col], _log_floor(pr["lower_95"]), _log_floor(pr["upper_95"]),
-                alpha=0.2, color="red", label="95% CI (autoregressive)",
+                alpha=0.2, color="red", label="Calibrated CI (autoregressive)",
             )
         ax.plot(
             pr[date_col], _log_floor(pr["value"]), color="red", linestyle="--",
@@ -953,11 +953,11 @@ def plot_feature_importance(
     scores = model.feature_importances_
     top_n = min(top_n, len(scores))
     idx = np.argsort(scores)[::-1][:top_n]
-    fig, ax = plt.subplots(figsize=(8, 6))
+    fig, ax = plt.subplots(figsize=(12, 6))
     ax.barh(range(top_n), scores[idx][::-1], align="center")
     ax.set_yticks(range(top_n))
-    ax.set_yticklabels([feature_names[i] for i in idx[::-1]])
-    ax.set_xlabel("Feature importance (gain)" if model_label == "XGBoost" else "Feature importance (AGOP diagonal, normalized)")
-    ax.set_title(f"Top {top_n} {model_label} feature importances")
+    ax.set_yticklabels([feature_names[i] for i in idx[::-1]], fontsize=13)
+    ax.set_xlabel("Feature Importance", fontsize=13)
+    ax.set_title(f"Top {top_n} {model_label} feature importances", fontsize=16)
     fig.tight_layout()
     _savefig("feature_importance.png", fig, outputs_dir)

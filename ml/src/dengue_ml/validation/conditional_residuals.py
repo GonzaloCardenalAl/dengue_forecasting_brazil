@@ -347,6 +347,17 @@ def compute_horizon_bucketed_quarterly_residual_quantile_table(
     return table
 
 
+# Used only by compute_horizon_bucketed_monthly_residual_quantile_table.
+# Monthly buckets only have ~40 (city, fold) samples each (one summed value
+# per outer-CV fold-year per city, regardless of bucket width); splitting
+# that further into low/high growth-proxy regime starves late-season "high"
+# buckets to n=3-6, where the global quantile_bounds() (1.25%/98.75%) tail is
+# just the single most extreme historical residual rather than a real
+# percentile estimate. Pooling both regimes and using a less extreme width
+# keeps the calibration from being dominated by one outlier fold-year.
+_MONTHLY_AR_QUANTILES = (0.05, 0.95)
+
+
 def compute_horizon_bucketed_monthly_residual_quantile_table(
     fold_predictions_ar: pd.DataFrame,
     model_name: str,
@@ -355,34 +366,31 @@ def compute_horizon_bucketed_monthly_residual_quantile_table(
     Monthly twin of `compute_horizon_bucketed_quarterly_residual_quantile_table`
     -- same autoregressive-rollout residuals, bucketed by `month_position`
     (1st..12th month of the forecast horizon) instead of `quarter_position`.
+    Unlike the quarterly/weekly tables, this one does NOT split by growth-proxy
+    regime (see _MONTHLY_AR_QUANTILES) -- "low"/"high" are identical so
+    `apply_residual_quantile_table`'s regime dispatch is a no-op here.
     Returns {1: {...}, ..., 12: {...}}.
     """
-    lower_q, upper_q = quantile_bounds()
+    lower_q, upper_q = _MONTHLY_AR_QUANTILES
     sub = fold_predictions_ar[fold_predictions_ar["model"] == model_name].copy()
     sub = sub[~is_known_data_gap(sub)]
 
     grouped = sub.groupby([CITY_COL, "fold", "month_position"]).agg(
         actual_sum=(TARGET, "sum"),
         predicted_sum=("predicted", "sum"),
-        **{PROXY_COL: (PROXY_COL, "first")},
     ).reset_index()
 
     log_resid = np.log1p(grouped["actual_sum"]) - np.log1p(grouped["predicted_sum"])
 
     table = {}
     for mpos in range(1, 13):
-        bucket_mask  = grouped["month_position"] == mpos
-        bucket_resid = log_resid[bucket_mask]
-        bucket_proxy = grouped.loc[bucket_mask, PROXY_COL]
-
-        low_resid  = bucket_resid[bucket_proxy <  REGIME_THRESHOLD]
-        high_resid = bucket_resid[bucket_proxy >= REGIME_THRESHOLD]
-
+        bucket_resid = log_resid[grouped["month_position"] == mpos]
+        band = {"q_lower": float(bucket_resid.quantile(lower_q)), "q_upper": float(bucket_resid.quantile(upper_q))}
         table[mpos] = {
             "proxy_col": PROXY_SOURCE_FEATURE,
             "threshold": REGIME_THRESHOLD,
-            "low":  {"q_lower": float(low_resid.quantile(lower_q)),  "q_upper": float(low_resid.quantile(upper_q))},
-            "high": {"q_lower": float(high_resid.quantile(lower_q)), "q_upper": float(high_resid.quantile(upper_q))},
+            "low": band,
+            "high": band,
         }
     return table
 
