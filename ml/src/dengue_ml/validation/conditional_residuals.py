@@ -355,7 +355,7 @@ def compute_horizon_bucketed_quarterly_residual_quantile_table(
 # just the single most extreme historical residual rather than a real
 # percentile estimate. Pooling both regimes and using a less extreme width
 # keeps the calibration from being dominated by one outlier fold-year.
-_MONTHLY_AR_QUANTILES = (0.05, 0.95)
+_MONTHLY_AR_QUANTILES = (0.10, 0.90)
 
 
 def compute_horizon_bucketed_monthly_residual_quantile_table(

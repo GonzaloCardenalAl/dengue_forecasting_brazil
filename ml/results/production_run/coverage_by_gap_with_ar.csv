@@ -1,0 +1,6 @@
+city_name,onestep_97_5pct_including_gap,onestep_97_5pct_excluding_gap,onestep_n_rows,onestep_n_gap_rows,ar_quarterly_97_5pct_including_gap,ar_quarterly_97_5pct_excluding_gap,ar_quarterly_97_5pct_n_rows,ar_quarterly_97_5pct_n_gap_rows,ar_monthly_90pct_including_gap,ar_monthly_90pct_excluding_gap,ar_monthly_90pct_n_rows,ar_monthly_90pct_n_gap_rows
+Belo Horizonte,0.975,0.975,120,0,0.95,0.95,40.0,0.0,0.8917,0.8917,120.0,0.0
+Rio de Janeiro,0.9667,0.9667,120,0,0.775,0.775,40.0,0.0,0.7917,0.7917,120.0,0.0
+São Paulo,0.95,0.95,120,0,0.775,0.775,40.0,0.0,0.7167,0.7167,120.0,0.0
+Vitória,0.8917,0.9817,120,11,0.8,0.8889,40.0,4.0,0.8,0.8796,120.0,12.0
+Overall,0.9458,0.968,480,11,0.825,0.8462,160.0,4.0,0.8,0.8184,480.0,12.0
