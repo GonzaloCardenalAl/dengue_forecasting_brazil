@@ -451,6 +451,7 @@ def plot_validation_rollout(
     filename: str = "validation_rollout.png",
     reveal_n: int | None = None,
     ylim: tuple[float, float] | None = None,
+    highlight_window: tuple[pd.Timestamp, pd.Timestamp] | None = None,
 ) -> None:
     """
     Single-city, continuous-timeline validation figure: `validation_year` is
@@ -478,6 +479,12 @@ def plot_validation_rollout(
     fig, ax = plt.subplots(figsize=(11, 5))
 
     pr = predicted if reveal_n is None else predicted[predicted["x_pos"] <= reveal_n]
+
+    if highlight_window is not None:
+        ax.axvspan(
+            *highlight_window, color="grey", alpha=0.18, zorder=0,
+            label="Trailing 1-year feature lookback",
+        )
 
     ax.plot(
         actual[date_col], _log_floor(actual["value"]), color="black", linestyle="-",
@@ -527,7 +534,15 @@ def plot_validation_rollout_frames(
     `actual`/`lead_in_oof` are static across every frame. Y-axis is fixed
     across every frame (same min/max as plot_forecast_year_over_year_frames'
     `_city_ylim`, just for this single city/series set) so the GIF doesn't
-    rescale as points are added.
+    rescale as points are added. The x-axis stays the full fixed
+    lead_in_year + validation_year span in every frame.
+
+    A shaded band marks the trailing 1-year feature lookback window ending
+    at the most recently revealed point, sliding forward one step per frame
+    -- since the longest lag/rolling features the model reads (e.g.
+    cases_rolling_mean_52w, cases_growth_52w) look back exactly one year,
+    this highlights which stretch of `actual`/`lead_in_oof` history is
+    actually feeding that point's prediction as the rollout advances.
     """
     from PIL import Image
 
@@ -546,9 +561,12 @@ def plot_validation_rollout_frames(
     frame_paths = []
     for i in range(1, n_steps + 1):
         fname = f"frame_{i:02d}.png"
+        current_date = predicted.loc[predicted["x_pos"] <= i, date_col].max()
+        highlight_window = (current_date - pd.DateOffset(years=1), current_date)
         plot_validation_rollout(
             city, actual, lead_in_oof, predicted, date_col, lead_in_year, validation_year,
             outputs_dir=outputs_dir, filename=fname, reveal_n=i, ylim=ylim,
+            highlight_window=highlight_window,
         )
         frame_paths.append(fig_dir / fname)
 
@@ -571,6 +589,7 @@ def plot_validation_rollout_grid(
     filename: str = "validation_rollout_grid.png",
     reveal_n: int | None = None,
     ylim_by_city: dict | None = None,
+    highlight_window: tuple[pd.Timestamp, pd.Timestamp] | None = None,
 ) -> None:
     """
     All-cities twin of plot_validation_rollout: same continuous-timeline,
@@ -586,6 +605,12 @@ def plot_validation_rollout_grid(
         pr = predicted[predicted[CITY_COL] == city].sort_values(date_col)
         if reveal_n is not None:
             pr = pr[pr["x_pos"] <= reveal_n]
+
+        if highlight_window is not None:
+            ax.axvspan(
+                *highlight_window, color="grey", alpha=0.18, zorder=0,
+                label="Trailing 1-year feature lookback",
+            )
 
         ax.plot(
             a[date_col], _log_floor(a["value"]), color="black", linestyle="-",
@@ -636,6 +661,12 @@ def plot_validation_rollout_grid_frames(
     """
     GIF twin of plot_validation_rollout_grid: same per-city fixed y-axis
     (`_city_ylim`) and Pillow assembly as plot_forecast_year_over_year_frames.
+    The x-axis stays the full fixed lead_in_year + validation_year span in
+    every frame.
+
+    Same sliding 1-year highlight band as plot_validation_rollout_frames
+    (see its docstring) -- computed once from `predicted`'s dates, since
+    `x_pos` (and therefore each frame's window) is shared across all cities.
     """
     from PIL import Image
 
@@ -647,9 +678,12 @@ def plot_validation_rollout_grid_frames(
     frame_paths = []
     for i in range(1, n_steps + 1):
         fname = f"frame_{i:02d}.png"
+        current_date = predicted.loc[predicted["x_pos"] <= i, date_col].max()
+        highlight_window = (current_date - pd.DateOffset(years=1), current_date)
         plot_validation_rollout_grid(
             cities, actual, lead_in_oof, predicted, date_col, lead_in_year, validation_year,
             outputs_dir=outputs_dir, filename=fname, reveal_n=i, ylim_by_city=ylim_by_city,
+            highlight_window=highlight_window,
         )
         frame_paths.append(fig_dir / fname)
 
