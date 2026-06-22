@@ -99,7 +99,7 @@ Nested rolling cross-validation, defined in `validation/time_splits.py` and `val
 
 `validation/metrics.py` computes MAE, RMSE, and MAPE (`calculate_all_metrics`) in the original (non-log) scale, per fold/model/city.
 
-95% confidence intervals use a **regime-conditional residual quantile** approach (`validation/conditional_residuals.py`): the residual distribution is split by whether the epidemic classifier's predicted probability of "epidemic this week" is ≥ 0.5, rather than using one uniform quantile band. This replaced an earlier version gated on InfoDengue's own `nivel_inc` alert level, and empirically achieves ~92.5–93% leave-one-fold-out coverage (vs. 73.1% for an original independent-quantile-models approach).
+95% confidence intervals use a **regime-conditional residual quantile** approach (`validation/conditional_residuals.py`): the residual distribution is split by whether the epidemic classifier's predicted probability of "epidemic this week" is ≥ 0.5 (rather than one uniform quantile band), and bucketed by forecast horizon since multi-step autoregressive error compounds. Empirical leave-one-fold-out coverage against the nominal 97.5% upper-bound target (`ml/results/production_run/coverage_by_gap_with_ar.csv`) is ~94.6% overall for one-step predictions (~96.8% excluding a known Vitória data-collection gap).
 
 ### Final training and artifact generation
 
@@ -203,9 +203,3 @@ uv run --package dengue-ml pytest ml/tests/
 ```
 
 **Note:** `app/` currently has no automated test suite — see [RUN_APP.md](RUN_APP.md)'s Troubleshooting section for manual verification.
-
-## Future Improvements
-
-- **TODO**: Populate `packages/dengue_core` with the shared utilities it's intended for, or remove it from the workspace if it stays unused.
-- **TODO**: Add automated tests for `app/` (FastAPI endpoints, Streamlit data layer) — none exist today.
-- **TODO**: Formalize the Render deployment as committed config (no `render.yaml`, `docker-compose.yml`, or `Procfile` exists in the repo today — see [RUN_APP.md](RUN_APP.md)).
